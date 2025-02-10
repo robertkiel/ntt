@@ -1,15 +1,6 @@
 use crate::dft::DFT;
+use crate::utils::bit_reverse;
 use rand::{self, Rng};
-
-pub enum Prime {
-    /// Any prime <= 2^61
-    Generic,
-    /// Any prime <= 2^51
-    /// The implementation uses floating point arithmetic
-    AvxCompatible,
-    /// Goldilocks prime, i.e. p = phi^2 - phi + 1
-    Goldilocks,
-}
 
 pub struct Table<O> {
     /// NTT friendly prime modulus
@@ -19,38 +10,6 @@ pub struct Table<O> {
     n: O,
     powers_psi_bo: Vec<u64>,
     powers_psi_inv_bo: Vec<u64>,
-}
-
-impl Table<u64> {
-    pub fn new() -> Self {
-        let mut res = Self {
-            q: 0x1fffffffffe00001u64,
-            psi: 0x15eb043c7aa2b01fu64, //2^17th root of unity
-            n: 2u64.pow(16),
-            powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
-            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
-        };
-
-        res.with_precomputes();
-
-        res
-    }
-
-    pub fn new_simple() -> Self {
-        // Values taken from https://eprint.iacr.org/2024/585.pdf
-        let mut res = Self {
-            q: 7681,
-            // 2^3th root of unity
-            psi: 1925,
-            n: 2u64.pow(2),
-            powers_psi_bo: Vec::with_capacity(2usize.pow(3)),
-            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(3)),
-        };
-
-        res.with_precomputes();
-
-        res
-    }
 }
 
 impl DFT<u64> for Table<u64> {
@@ -84,6 +43,64 @@ impl DFT<u64> for Table<u64> {
 }
 
 impl Table<u64> {
+    pub fn new() -> Self {
+        let mut res = Self {
+            q: 0x1fffffffffe00001u64,
+            psi: 0x15eb043c7aa2b01fu64, //2^17th root of unity
+            n: 2u64.pow(16),
+            powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
+            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
+        };
+
+        res.with_precomputes();
+
+        res
+    }
+
+    pub fn new_float_compatible() -> Self {
+        let mut res = Self {
+            q: 4503599626321921,
+            psi: 4183818951195512,
+            n: 2u64.pow(16),
+            powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
+            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
+        };
+
+        res.with_precomputes();
+
+        res
+    }
+
+    pub fn new_u32_compatible() -> Self {
+        let mut res = Self {
+            q: 4293918721,
+            psi: 2004365341,
+            n: 2u64.pow(16),
+            powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
+            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
+        };
+
+        res.with_precomputes();
+
+        res
+    }
+
+    pub fn new_simple() -> Self {
+        // Values taken from https://eprint.iacr.org/2024/585.pdf
+        let mut res = Self {
+            q: 7681,
+            // 2^3th root of unity
+            psi: 1925,
+            n: 2u64.pow(2),
+            powers_psi_bo: Vec::with_capacity(2usize.pow(3)),
+            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(3)),
+        };
+
+        res.with_precomputes();
+
+        res
+    }
+
     fn mod_exp(&self, base: u64, mut exp: u64) -> u64 {
         let mut out = 1;
 
@@ -104,7 +121,6 @@ impl Table<u64> {
 
     pub fn forward_inplace_core<const LAZY: bool>(&self, a: &mut [u64]) {
         let a_len = a.len();
-        let log_a = a_len.ilog2();
 
         let mut t = a_len;
         let mut m = 1;
@@ -248,43 +264,6 @@ impl Table<u64> {
                 _ => break g as u64,
             }
         }
-    }
-}
-
-fn bit_reverse(n: u64, bits: u32) -> u64 {
-    let shift = (64 - bits) / 2;
-    (n << shift).reverse_bits() >> shift
-}
-
-fn u4_bit_reverse(n: u64) -> u64 {
-    match n {
-        0b0000 => 0b0000,
-        0b0001 => 0b1000,
-        0b0010 => 0b0100,
-        0b0011 => 0b1100,
-        0b0100 => 0b0010,
-        0b0101 => 0b1010,
-        0b0110 => 0b0110,
-        0b0111 => 0b1110,
-        0b1000 => 0b0001,
-        0b1001 => 0b1001,
-        0b1010 => 0b0101,
-        0b1011 => 0b1101,
-        0b1100 => 0b0011,
-        0b1101 => 0b1011,
-        0b1110 => 0b0111,
-        0b1111 => 0b1111,
-        _ => panic!("exceed bounds"),
-    }
-}
-
-fn u2_bit_reverse(n: u64) -> u64 {
-    match n {
-        0b00 => 0b00,
-        0b01 => 0b10,
-        0b10 => 0b01,
-        0b11 => 0b11,
-        _ => panic!("exceed bounds"),
     }
 }
 
