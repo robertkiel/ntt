@@ -249,8 +249,8 @@ impl Table<u64> {
         }
     }
 
-    /// Assuming that m is prime and m-1 = 2^n * ...
-    fn find_nth_unity_root(&self, n: u64, m: u64) -> u64 {
+    /// Finds a nth root of unity. Can be computed once and then cached.
+    pub fn find_nth_unity_root(&self, n: u64, m: u64) -> u64 {
         let mut rand = rand::rng();
 
         let mut tmp;

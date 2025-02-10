@@ -45,8 +45,15 @@ mod tests {
             a_float.iter().copied().take(4).collect::<Vec<u32>>()
         );
 
-        // table.backward_inplace(&mut a);
+        println!("Going backwards");
 
-        // assert_eq!(a_clone, a);
+        table.backward_inplace(&mut a);
+        table_avx.backward_inplace(&mut a_float);
+
+        println!("a {:?}", a.iter().copied().take(4).collect::<Vec<u64>>());
+        println!(
+            "a_float {:?}",
+            a_float.iter().copied().take(4).collect::<Vec<u32>>()
+        );
     }
 }
