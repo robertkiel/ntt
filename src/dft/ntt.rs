@@ -71,6 +71,20 @@ impl Table<u64> {
         res
     }
 
+    pub fn new_goldilock() -> Self {
+        let mut res = Self {
+            q: 0xffffffff00000001,
+            psi: 0xabd0a6e8aa3d8a0e, //2^17th root of unity
+            n: 2u64.pow(16),
+            powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
+            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
+        };
+
+        res.with_precomputes();
+
+        res
+    }
+
     pub fn new_u32_compatible() -> Self {
         let mut res = Self {
             q: 4293918721,
@@ -130,36 +144,30 @@ impl Table<u64> {
                 break;
             }
 
-            t = t / 2;
+            t /= 2;
 
             for i in 0..m {
                 let j_1 = 2 * i * t;
                 let j_2 = j_1 + t - 1;
 
-                let cap_s = self.powers_psi_bo[(m + i) as usize];
+                let cap_s = self.powers_psi_bo[m + i];
 
                 for j in j_1..=j_2 {
-                    let cap_u = a[j as usize];
-                    let cap_v = self.mul_reduce(a[j as usize + t as usize], cap_s);
+                    let cap_u = a[j];
+                    let cap_v = self.mul_reduce(a[j + t], cap_s);
 
                     let mut cap_u_add_cap_v = cap_u + cap_v;
                     if cap_u_add_cap_v > self.q {
                         cap_u_add_cap_v -= self.q;
                     }
-                    a[j as usize] = cap_u_add_cap_v;
+                    a[j] = cap_u_add_cap_v;
 
                     let cap_u_sub_cap_v = match cap_u.overflowing_sub(cap_v) {
-                        (res, true) => {
-                            let (inner_res, overflow) = res.overflowing_add(self.q);
-
-                            assert!(overflow);
-
-                            inner_res
-                        }
+                        (res, true) => res.overflowing_add(self.q).0,
                         (res, false) => res,
                     };
 
-                    a[j as usize + t as usize] = cap_u_sub_cap_v % self.q;
+                    a[j + t] = cap_u_sub_cap_v % self.q;
                 }
             }
 
@@ -207,7 +215,7 @@ impl Table<u64> {
                         (res, false) => res,
                     };
 
-                    a[j as usize + t as usize] = self.mul_reduce(cap_u_sub_cap_v, cap_s);
+                    a[j + t] = self.mul_reduce(cap_u_sub_cap_v, cap_s);
                 }
                 j_1 += 2 * t;
             }
@@ -218,8 +226,8 @@ impl Table<u64> {
         }
 
         let n_inv = self.mod_exp(a_len as u64, self.q - 2);
-        for j in 0..a_len {
-            a[j as usize] = self.mul_reduce(a[j as usize], n_inv);
+        for a_j in a.iter_mut() {
+            *a_j = self.mul_reduce(*a_j, n_inv);
         }
     }
 
@@ -261,7 +269,7 @@ impl Table<u64> {
 
             match self.mod_exp(g, n / 2) {
                 1 => continue,
-                _ => break g as u64,
+                _ => break g,
             }
         }
     }
@@ -269,76 +277,11 @@ impl Table<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::u128;
-
     use rand::Rng;
 
     use crate::dft::DFT;
 
     use super::Table;
-
-    trait NaiveImplementation {
-        fn forward_naive(&self, a: &mut [u64]);
-
-        fn backward_naive(&self, a: &mut [u64]);
-    }
-
-    impl NaiveImplementation for Table<u64> {
-        fn forward_naive(&self, a: &mut [u64]) {
-            let a_len = a.len();
-
-            let omega = self.mod_exp(self.psi, 2);
-
-            let mut out = Vec::<u64>::with_capacity(a_len);
-            out.resize(a_len, 0);
-
-            for j in 0..a_len {
-                for i in 0..a_len {
-                    let i_j = (i * j) as u64 % self.q;
-
-                    let omega_i_j = self.mod_exp(omega, i_j);
-
-                    out[j] = (out[j]
-                        + ((a[i] as u128 * omega_i_j as u128) % self.q as u128) as u64)
-                        % self.q;
-                }
-            }
-
-            for i in 0..a_len {
-                a[i] = out[i];
-            }
-        }
-
-        fn backward_naive(&self, a: &mut [u64]) {
-            let a_len = a.len();
-
-            let omega = self.mod_exp(self.psi, 2);
-
-            let mut out = Vec::<u64>::with_capacity(a_len);
-            out.resize(a_len, 0);
-
-            // Invert by exponentiation
-            let omega_inv = self.mod_exp(omega, self.q - 2);
-
-            for j in 0..a_len {
-                for i in 0..a_len {
-                    let i_j = (i * j) as u64 % self.q;
-
-                    let psi_i_j = self.mod_exp(omega_inv, i_j);
-
-                    out[j] = out[j]
-                        + ((a[i] as u128 * psi_i_j as u128) % self.q as u128) as u64 % self.q;
-                }
-            }
-
-            // Invert by exponentiation
-            let n_inv = self.mod_exp(a_len as u64, self.q - 2);
-
-            for i in 0..a_len {
-                a[i] = ((n_inv as u128 * out[i] as u128) % self.q as u128) as u64;
-            }
-        }
-    }
 
     #[test]
     fn test_mod_exp() {
@@ -347,27 +290,6 @@ mod tests {
         let res = table.mod_exp(4, table.q - 2);
 
         assert_eq!(res, 5761);
-        println!("res {}", res);
-    }
-
-    #[test]
-    fn test_simple_case() {
-        let table = Table::<u64>::new_simple();
-
-        let mut a = [1001, 2002, 3003, 4004];
-        table.forward_inplace(&mut a);
-
-        println!("ntt {a:?}");
-
-        let mut a_naive = [1, 2, 3, 4];
-
-        table.forward_naive(&mut a_naive);
-
-        println!("ntt naive {a_naive:?}");
-
-        table.backward_inplace(&mut a);
-
-        println!("intt {a:?}");
     }
 
     #[test]
@@ -387,28 +309,5 @@ mod tests {
         table.backward_inplace(&mut a);
 
         assert_eq!(a_clone, a);
-    }
-
-    // #[test]
-    // fn test_mod_mul() {
-    //     println!("{}", mod_mul_u64(2, 3, 23));
-    // }
-
-    // #[test]
-    // fn test_mod_inv() {
-    //     println!("{}", mod_inv_u64(3383, 7681));
-    // }
-
-    #[test]
-    fn test_find_nth_unity_root() {
-        let foo = Table::new();
-        println!("{}", foo.find_nth_unity_root(8, 7681));
-    }
-
-    #[test]
-    fn test_arithmetics() {
-        let res = 3u64.overflowing_sub(5u64);
-
-        println!("{:?}", res.0 + 5);
     }
 }

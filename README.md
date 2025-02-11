@@ -1,5 +1,15 @@
 # Rust test
 
+Implemented features:
+
+- standard, FFT forward & backward, various primes
+- AVX2 for 32bit primes, FFT forward & backward
+- Goldilock, FFT forward & backward
+
+TODO:
+
+- extend AVX2 `a * b mod p` for primes <= 2^64 - 1 using Karatsuba
+
 ## Introduction
 
 This is the coding interview for the Rust Engineer role at Phantom Zone (see [Linkedin](https://www.linkedin.com/jobs/view/4110239195/)).

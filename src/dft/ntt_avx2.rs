@@ -4,10 +4,14 @@ use crate::dft::DFT;
 use crate::utils::bit_reverse;
 use std::arch::x86_64::*;
 
-const DOUBLE_PRIME: f64 = 4503599626321921.0;
-const U32_PRIME: u32 = 4293918721;
+// prime to be used in the 51-bit setting
+// TODO: make mulmod compatible with values > 32 bits, e.g. use Karatsuba multiplication
+// pub const DOUBLE_PRIME: f64 = 4503599626321921.0;
 
-pub struct TableAVX {
+/// NTT-friendly prime with 2^20 rooys of unity
+pub const U32_PRIME: u32 = 4293918721;
+
+pub struct TableAVX2 {
     /// The NTT modulus. This implementation support primes with <=32 bits
     pub q: u32,
     /// N-th root of unity
@@ -15,6 +19,9 @@ pub struct TableAVX {
     /// Which root of unity psi is
     n: usize,
     // ------ internals, mostly caching --------
+    /// inverse of n, in AVX2 struct
+    n_inv: __m256i,
+    /// 2^32 in AVX2 struct, used for `a * b mod q` computation
     power: __m256d,
     /// q as AVX2 integer vector
     q_vec: __m256i,
@@ -44,7 +51,7 @@ pub struct TableAVX {
     powers_psi_inv_bo_chunks_1: Vec<__m256i>,
 }
 
-impl DFT<u32> for TableAVX {
+impl DFT<u32> for TableAVX2 {
     /// NTT forward routine
     ///
     /// - `a`: vector with each element in range `[0, q)`
@@ -74,7 +81,7 @@ impl DFT<u32> for TableAVX {
     }
 }
 
-impl TableAVX {
+impl TableAVX2 {
     pub fn new() -> Self {
         let n = 2usize.pow(16);
         let mut res = Self {
@@ -105,6 +112,7 @@ impl TableAVX {
             },
             psi: 2004365341,
             n,
+            n_inv: unsafe { _mm256_setr_epi64x(4293853201, 4293853201, 4293853201, 4293853201) },
             // -- precomputed powers of psi
             powers_psi_bo: Vec::with_capacity(n),
             powers_psi_bo_chunks_4: Vec::with_capacity(n / 4),
@@ -122,22 +130,22 @@ impl TableAVX {
         res
     }
 
-    // /// Finds a nth root of unity. Can be computed once and then cached.
-    // fn find_nth_unity_root(&self, n: u64, m: u64) -> u64 {
-    //     let mut rand = rand::rng();
+    /// Finds a nth root of unity. Can be computed once and then cached.
+    pub fn find_nth_unity_root(&self, n: u64, m: u64) -> u64 {
+        let mut rand = rand::rng();
 
-    //     let mut tmp;
-    //     loop {
-    //         tmp = rand.random_range(2..m);
+        let mut tmp;
+        loop {
+            tmp = rand.random_range(2..m);
 
-    //         let g = self.mod_exp(tmp, (m - 1) / n);
+            let g = self.mod_exp(tmp, (m - 1) / n);
 
-    //         match self.mod_exp(g, n / 2) {
-    //             1 => continue,
-    //             _ => break g,
-    //         }
-    //     }
-    // }
+            match self.mod_exp(g, n / 2) {
+                1 => continue,
+                _ => break g,
+            }
+        }
+    }
 
     /// Modular exponentiation, i.e. `base^exp mod q`
     fn mod_exp(&self, base: u64, mut exp: u64) -> u64 {
@@ -150,7 +158,7 @@ impl TableAVX {
                 out = (out * acc) % self.q as u64;
             }
 
-            acc = (acc as u64 * acc as u64) % self.q as u64;
+            acc = (acc * acc) % self.q as u64;
 
             exp >>= 1;
         }
@@ -170,7 +178,7 @@ impl TableAVX {
                 break;
             }
 
-            t = t / 2;
+            t /= 2;
 
             if t == 1 && m >= 4 {
                 let mut i = 0;
@@ -216,57 +224,63 @@ impl TableAVX {
 
                     i += 4;
                 }
-            // } else if t == 2 && m >= 4 {
-            //     let mut i = 0;
+            } else if t == 2 && m >= 4 {
+                let mut i = 0;
 
-            //     loop {
-            //         if i >= m {
-            //             break;
-            //         }
+                loop {
+                    if i >= m {
+                        break;
+                    }
 
-            //         unsafe {
-            //             let mut a_j = _mm256_setr_epi64x(
-            //                 a[2 * i * 2] as i64,
-            //                 a[2 * i * 2 + 1] as i64,
-            //                 a[2 * (i + 1) * 2] as i64,
-            //                 a[2 * (i + 1) * 2 + 1] as i64,
-            //             );
+                    let j_i1 = 2 * i * 2;
+                    let j_i1_t = j_i1 + 2;
 
-            //             let mut a_j_t = _mm256_setr_epi64x(
-            //                 a[2 * i * 2 + 2] as i64,
-            //                 a[2 * i * 2 + 1 + 2] as i64,
-            //                 a[2 * (i + 1) * 2 + 2] as i64,
-            //                 a[2 * (i + 1) * 2 + 1 + 2] as i64,
-            //             );
+                    let j_i2 = 2 * (i + 1) * 2;
+                    let j_i2_t = j_i2 + 2;
 
-            //             self.ntt_kernel_4(
-            //                 &self.powers_psi_bo_chunks_2[(m + i) / 2],
-            //                 &mut a_j,
-            //                 &mut a_j_t,
-            //             );
+                    unsafe {
+                        let mut a_j = _mm256_setr_epi64x(
+                            a[j_i1] as i64,
+                            a[j_i1 + 1] as i64,
+                            a[j_i2] as i64,
+                            a[j_i2 + 1] as i64,
+                        );
 
-            //             let a_j = extract_m256i_to_u64(&a_j);
-            //             a[2 * i * 2] = a_j[0] as u32;
-            //             a[2 * i * 2 + 1] = a_j[1] as u32;
-            //             a[2 * (i + 1) * 2] = a_j[2] as u32;
-            //             a[2 * (i + 1) * 2 + 1] = a_j[3] as u32;
+                        let mut a_j_t = _mm256_setr_epi64x(
+                            a[j_i1_t] as i64,
+                            a[j_i1_t + 1] as i64,
+                            a[j_i2_t] as i64,
+                            a[j_i2_t + 1] as i64,
+                        );
 
-            //             let a_j_t = extract_m256i_to_u64(&a_j_t);
-            //             a[2 * i * 2 + 2] = a_j_t[0] as u32;
-            //             a[2 * i * 2 + 1 + 2] = a_j_t[1] as u32;
-            //             a[2 * (i + 1) * 2 + 2] = a_j_t[2] as u32;
-            //             a[2 * (i + 1) * 2 + 1 + 2] = a_j_t[3] as u32;
-            //         }
+                        self.ntt_kernel_4(
+                            &self.powers_psi_bo_chunks_2[(m + i) / 2],
+                            &mut a_j,
+                            &mut a_j_t,
+                        );
 
-            //         i += 2;
-            //     }
+                        let a_j = extract_m256i_to_u64(&a_j);
+                        a[j_i1] = a_j[0] as u32;
+                        a[j_i1 + 1] = a_j[1] as u32;
+                        a[j_i2] = a_j[2] as u32;
+                        a[j_i2 + 1] = a_j[3] as u32;
+
+                        let a_j_t = extract_m256i_to_u64(&a_j_t);
+                        a[j_i1_t] = a_j_t[0] as u32;
+                        a[j_i1_t + 1] = a_j_t[1] as u32;
+                        a[j_i2_t] = a_j_t[2] as u32;
+                        a[j_i2_t + 1] = a_j_t[3] as u32;
+                    }
+
+                    i += 2;
+                }
             } else {
                 for i in 0..m {
                     let j_1 = 2 * i * t;
                     let j_2 = j_1 + t - 1;
 
-                    let cap_s_vec = self.powers_psi_bo_chunks_1[(m + i) as usize];
-                    let cap_s = self.powers_psi_bo[(m + i) as usize];
+                    let cap_s_vec = self.powers_psi_bo_chunks_1[m + i];
+                    let cap_s = self.powers_psi_bo[m + i];
 
                     for mut j in j_1..=j_2 {
                         loop {
@@ -329,7 +343,7 @@ impl TableAVX {
         let a_len = a.len();
 
         let mut t = 1;
-        let mut m: u64 = a_len as u64;
+        let mut m = a_len;
 
         loop {
             if m == 1 {
@@ -339,61 +353,157 @@ impl TableAVX {
             let mut j_1 = 0;
             let h = m / 2;
 
-            for i in 0..h {
-                let j_2 = j_1 + t - 1;
-                let cap_s = self.powers_psi_inv_bo[(h + i) as usize];
-                let cap_s_vec = self.powers_psi_inv_bo_chunks_1[(h + i) as usize];
+            if t == 1 && h >= 4 {
+                let mut i = 0;
 
-                for mut j in j_1..=j_2 {
-                    loop {
-                        if t < 4 || j >= j_2 {
-                            break;
-                        }
-
-                        unsafe {
-                            let mut a_j = _mm256_setr_epi64x(
-                                a[j] as i64,
-                                a[j + 1] as i64,
-                                a[j + 2] as i64,
-                                a[j + 3] as i64,
-                            );
-
-                            let mut a_j_t = _mm256_setr_epi64x(
-                                a[j + t] as i64,
-                                a[j + t + 1] as i64,
-                                a[j + t + 2] as i64,
-                                a[j + t + 3] as i64,
-                            );
-
-                            self.intt_kernel_4(&cap_s_vec, &mut a_j, &mut a_j_t);
-
-                            let a_j = extract_m256i_to_u64(&a_j);
-                            a[j] = a_j[0] as u32;
-                            a[j + 1] = a_j[1] as u32;
-                            a[j + 2] = a_j[2] as u32;
-                            a[j + 3] = a_j[3] as u32;
-
-                            let a_j_t = extract_m256i_to_u64(&a_j_t);
-                            a[j + t] = a_j_t[0] as u32;
-                            a[j + t + 1] = a_j_t[1] as u32;
-                            a[j + t + 2] = a_j_t[2] as u32;
-                            a[j + t + 3] = a_j_t[3] as u32;
-                        };
-
-                        j += 4;
-                        continue;
-                    }
-
-                    if j > j_2 {
+                loop {
+                    if i >= h {
                         break;
                     }
 
-                    let (a_j, a_j_t) = self.intt_kernel_1(cap_s, a[j], a[j + t]);
+                    unsafe {
+                        let mut a_j = _mm256_setr_epi64x(
+                            a[2 * i] as i64,
+                            a[2 * (i + 1)] as i64,
+                            a[2 * (i + 2)] as i64,
+                            a[2 * (i + 3)] as i64,
+                        );
 
-                    a[j] = a_j;
-                    a[j + t] = a_j_t;
+                        let mut a_j_t = _mm256_setr_epi64x(
+                            a[2 * i + 1] as i64,
+                            a[2 * (i + 1) + 1] as i64,
+                            a[2 * (i + 2) + 1] as i64,
+                            a[2 * (i + 3) + 1] as i64,
+                        );
+
+                        self.intt_kernel_4(
+                            &self.powers_psi_inv_bo_chunks_4[(h + i) / 4],
+                            &mut a_j,
+                            &mut a_j_t,
+                        );
+
+                        let a_j = extract_m256i_to_u64(&a_j);
+                        a[2 * i] = a_j[0] as u32;
+                        a[2 * (i + 1)] = a_j[1] as u32;
+                        a[2 * (i + 2)] = a_j[2] as u32;
+                        a[2 * (i + 3)] = a_j[3] as u32;
+
+                        let a_j_t = extract_m256i_to_u64(&a_j_t);
+                        a[2 * i + 1] = a_j_t[0] as u32;
+                        a[2 * (i + 1) + 1] = a_j_t[1] as u32;
+                        a[2 * (i + 2) + 1] = a_j_t[2] as u32;
+                        a[2 * (i + 3) + 1] = a_j_t[3] as u32;
+                    }
+
+                    i += 4;
                 }
-                j_1 += 2 * t;
+            } else if t == 2 && h >= 4 {
+                let mut i = 0;
+
+                loop {
+                    if i >= h {
+                        break;
+                    }
+
+                    let j_i1 = 2 * i * 2;
+                    let j_i1_t = j_i1 + 2;
+
+                    let j_i2 = 2 * (i + 1) * 2;
+                    let j_i2_t = j_i2 + 2;
+
+                    unsafe {
+                        let mut a_j = _mm256_setr_epi64x(
+                            a[j_i1] as i64,
+                            a[j_i1 + 1] as i64,
+                            a[j_i2] as i64,
+                            a[j_i2 + 1] as i64,
+                        );
+
+                        let mut a_j_t = _mm256_setr_epi64x(
+                            a[j_i1_t] as i64,
+                            a[j_i1_t + 1] as i64,
+                            a[j_i2_t] as i64,
+                            a[j_i2_t + 1] as i64,
+                        );
+
+                        self.intt_kernel_4(
+                            &self.powers_psi_inv_bo_chunks_2[(h + i) / 2],
+                            &mut a_j,
+                            &mut a_j_t,
+                        );
+
+                        let a_j = extract_m256i_to_u64(&a_j);
+                        a[j_i1] = a_j[0] as u32;
+                        a[j_i1 + 1] = a_j[1] as u32;
+                        a[j_i2] = a_j[2] as u32;
+                        a[j_i2 + 1] = a_j[3] as u32;
+
+                        let a_j_t = extract_m256i_to_u64(&a_j_t);
+                        a[j_i1_t] = a_j_t[0] as u32;
+                        a[j_i1_t + 1] = a_j_t[1] as u32;
+                        a[j_i2_t] = a_j_t[2] as u32;
+                        a[j_i2_t + 1] = a_j_t[3] as u32;
+                    }
+
+                    i += 2;
+                }
+            } else {
+                for i in 0..h {
+                    let j_2 = j_1 + t - 1;
+                    let cap_s = self.powers_psi_inv_bo[h + i];
+                    let cap_s_vec = self.powers_psi_inv_bo_chunks_1[h + i];
+
+                    for mut j in j_1..=j_2 {
+                        loop {
+                            if t < 4 || j >= j_2 {
+                                break;
+                            }
+
+                            unsafe {
+                                let mut a_j = _mm256_setr_epi64x(
+                                    a[j] as i64,
+                                    a[j + 1] as i64,
+                                    a[j + 2] as i64,
+                                    a[j + 3] as i64,
+                                );
+
+                                let mut a_j_t = _mm256_setr_epi64x(
+                                    a[j + t] as i64,
+                                    a[j + t + 1] as i64,
+                                    a[j + t + 2] as i64,
+                                    a[j + t + 3] as i64,
+                                );
+
+                                self.intt_kernel_4(&cap_s_vec, &mut a_j, &mut a_j_t);
+
+                                let a_j = extract_m256i_to_u64(&a_j);
+                                a[j] = a_j[0] as u32;
+                                a[j + 1] = a_j[1] as u32;
+                                a[j + 2] = a_j[2] as u32;
+                                a[j + 3] = a_j[3] as u32;
+
+                                let a_j_t = extract_m256i_to_u64(&a_j_t);
+                                a[j + t] = a_j_t[0] as u32;
+                                a[j + t + 1] = a_j_t[1] as u32;
+                                a[j + t + 2] = a_j_t[2] as u32;
+                                a[j + t + 3] = a_j_t[3] as u32;
+                            };
+
+                            j += 4;
+                            continue;
+                        }
+
+                        if j > j_2 {
+                            break;
+                        }
+
+                        let (a_j, a_j_t) = self.intt_kernel_1(cap_s, a[j], a[j + t]);
+
+                        a[j] = a_j;
+                        a[j + t] = a_j_t;
+                    }
+                    j_1 += 2 * t;
+                }
             }
 
             t *= 2;
@@ -401,9 +511,27 @@ impl TableAVX {
             m /= 2;
         }
 
-        let n_inv = self.mod_exp(a_len as u64, self.q as u64 - 2) as u32;
-        for j in 0..a_len {
-            a[j as usize] = self.mul_reduce(a[j as usize], n_inv);
+        let mut j = 0;
+        loop {
+            if j >= a_len {
+                break;
+            }
+
+            unsafe {
+                let a_j = _mm256_setr_epi64x(
+                    a[j] as i64,
+                    a[j + 1] as i64,
+                    a[j + 2] as i64,
+                    a[j + 3] as i64,
+                );
+                let res = extract_m256i_to_u64(&self.mul_reduce_vec(&a_j, &self.n_inv));
+                a[j] = res[0] as u32;
+                a[j + 1] = res[1] as u32;
+                a[j + 2] = res[2] as u32;
+                a[j + 3] = res[3] as u32;
+            }
+
+            j += 4;
         }
     }
 
@@ -455,7 +583,7 @@ impl TableAVX {
     unsafe fn ntt_kernel_4(&self, cap_s: &__m256i, a_j: &mut __m256i, a_j_t: &mut __m256i) {
         let cap_u = *a_j;
 
-        let cap_v = self.mul_reduce_vec(a_j_t, &cap_s);
+        let cap_v = self.mul_reduce_vec(a_j_t, cap_s);
 
         let mut cap_u_add_cap_v = _mm256_add_epi64(cap_u, cap_v);
 
@@ -486,7 +614,23 @@ impl TableAVX {
         *a_j_t = self.mul_reduce_vec(&cap_u_sub_cap_v, cap_s);
     }
 
-    /// Computes `a * b mod q` using AVX2 instructions
+    /// Computes `a * b mod q` using AVX2 instructions.
+    ///
+    /// Limitations by AVX2:
+    /// - big multiplication (double float * double float) -> double float lacks required precision
+    /// - division is only implemented for floats
+    /// - unsigned multiplication is only implemented for (2^32 - 1) * (2^32 - 1)
+    /// - no remainder operation, i.e. modulo builtin
+    ///
+    /// Idea:
+    /// - use 32bit integer multiplication
+    /// - use 53bit float division
+    ///
+    /// Detail:
+    /// 1. compute r = a*b mod 2^64 -1
+    /// 2. compute quotient = (r[63;32] * 2^32) / q using floats
+    /// 2. compute intermediate = r - (quotient * r[63:32])
+    /// 3. reduce intermediate mod q, i.e. add or subtract modulus
     #[inline]
     unsafe fn mul_reduce_vec(&self, a: &__m256i, b: &__m256i) -> __m256i {
         // product = a * b
@@ -593,11 +737,11 @@ impl TableAVX {
         let mut tmp_psi = 1;
         let mut tmp_psi_inv = 1;
 
-        let mut tmp_powers_of_psi_bo = Vec::<u32>::with_capacity(self.n as usize);
-        let mut tmp_powers_of_psi_inv_bo = Vec::<u32>::with_capacity(self.n as usize);
+        let mut tmp_powers_of_psi_bo = Vec::<u32>::with_capacity(self.n);
+        let mut tmp_powers_of_psi_inv_bo = Vec::<u32>::with_capacity(self.n);
 
-        tmp_powers_of_psi_bo.resize(self.n as usize, 0);
-        tmp_powers_of_psi_inv_bo.resize(self.n as usize, 0);
+        tmp_powers_of_psi_bo.resize(self.n, 0);
+        tmp_powers_of_psi_inv_bo.resize(self.n, 0);
 
         let log_n = self.n.ilog2();
 
@@ -659,7 +803,7 @@ impl TableAVX {
                     tmp_powers_of_psi_bo[i + 1] as i64,
                 )
             });
-            self.powers_psi_bo_chunks_2.push(unsafe {
+            self.powers_psi_inv_bo_chunks_2.push(unsafe {
                 _mm256_setr_epi64x(
                     tmp_powers_of_psi_inv_bo[i] as i64,
                     tmp_powers_of_psi_inv_bo[i] as i64,
@@ -735,7 +879,7 @@ mod tests {
     use std::arch::x86_64::*;
 
     use super::{
-        extract_m256d_to_f64, extract_m256i_to_u64, m256d_to_m256i, m256i_to_m256d, TableAVX,
+        extract_m256d_to_f64, extract_m256i_to_u64, m256d_to_m256i, m256i_to_m256d, TableAVX2,
     };
 
     #[test]
@@ -777,7 +921,7 @@ mod tests {
 
     #[test]
     fn reduce_if_negative() {
-        let table = TableAVX::new();
+        let table = TableAVX2::new();
         let control = unsafe {
             let mut res = _mm256_setr_epi64x(-1, -2, -3, -4);
 
@@ -803,7 +947,7 @@ mod tests {
 
     #[test]
     fn reduce_if_greate_equal_q() {
-        let table = TableAVX::new();
+        let table = TableAVX2::new();
         let control = unsafe {
             let mut res = _mm256_setr_epi64x(
                 (table.q + 1) as i64,
@@ -828,7 +972,7 @@ mod tests {
     // 678141164
     #[test]
     fn mul_reduce_vec() {
-        let table = TableAVX::new();
+        let table = TableAVX2::new();
         let control = unsafe {
             let a = _mm256_setr_epi64x(4119828181, 1439360284, 1073741824, 1073741824);
             let b = _mm256_setr_epi64x(3770581993, 2870057844, 1073741824, 1073741824);
@@ -856,7 +1000,7 @@ mod tests {
 
     #[test]
     fn ntt_kernel_4() {
-        let table = TableAVX::new();
+        let table = TableAVX2::new();
 
         let (a_j, a_j_t) = unsafe {
             let mut a_j = _mm256_setr_epi64x(2825332433, 3362019074, 2509869327, 4246358974);
