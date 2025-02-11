@@ -8,7 +8,7 @@ use std::arch::x86_64::*;
 // TODO: make mulmod compatible with values > 32 bits, e.g. use Karatsuba multiplication
 // pub const DOUBLE_PRIME: f64 = 4503599626321921.0;
 
-/// NTT-friendly prime with 2^20 rooys of unity
+/// NTT-friendly prime with 2^20 roots of unity
 pub const U32_PRIME: u32 = 4293918721;
 
 pub struct TableAVX2 {
@@ -846,7 +846,7 @@ pub fn extract_m256d_to_f64(a: &__m256d) -> [f64; 4] {
 
 /// Converts AVX2 floats (double precision) to AVX2 32-bit integers stored in AVX2 64-bit register, very handy for testing.
 ///
-/// The 32-bit floats must be arranged as `(0, a, 0, b, 0, c, 0, d)`.
+/// The 32-bit integers must be arranged as `(0, a, 0, b, 0, c, 0, d)`.
 #[inline]
 pub fn m256d_to_m256i(a: &__m256d) -> __m256i {
     unsafe {
@@ -968,8 +968,6 @@ mod tests {
         assert_eq!([1, 0, 3, 4], extract_m256i_to_u64(&control))
     }
 
-    // 3616826132
-    // 678141164
     #[test]
     fn mul_reduce_vec() {
         let table = TableAVX2::new();

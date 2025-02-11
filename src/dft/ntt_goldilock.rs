@@ -147,7 +147,7 @@ impl TableGoldilock<u64> {
         let a_len = a.len();
 
         let mut t = 1;
-        let mut m: u64 = a_len as u64;
+        let mut m = a_len;
 
         loop {
             if m == 1 {
@@ -159,7 +159,7 @@ impl TableGoldilock<u64> {
 
             for i in 0..h {
                 let j_2 = j_1 + t - 1;
-                let cap_s = self.powers_psi_inv_bo[(h + i) as usize];
+                let cap_s = self.powers_psi_inv_bo[h + i];
 
                 for j in j_1..=j_2 {
                     let cap_u = a[j];
