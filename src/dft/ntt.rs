@@ -4,10 +4,11 @@ use rand::{self, Rng};
 
 pub struct Table<O> {
     /// NTT friendly prime modulus
-    q: O,
+    pub q: O,
     /// n-th root of unity
-    psi: O,
+    pub psi: O,
     n: O,
+    n_inv: O,
     powers_psi_bo: Vec<u64>,
     powers_psi_inv_bo: Vec<u64>,
 }
@@ -48,6 +49,7 @@ impl Table<u64> {
             q: 0x1fffffffffe00001u64,
             psi: 0x15eb043c7aa2b01fu64, //2^17th root of unity
             n: 2u64.pow(16),
+            n_inv: 0x1fffdfffffe00021,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -62,6 +64,7 @@ impl Table<u64> {
             q: 4503599626321921,
             psi: 4183818951195512,
             n: 2u64.pow(16),
+            n_inv: 4503530906845201,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -76,6 +79,7 @@ impl Table<u64> {
             q: 0xffffffff00000001,
             psi: 0xabd0a6e8aa3d8a0e, //2^17th root of unity
             n: 2u64.pow(16),
+            n_inv: 0xfffeffff00010001,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -90,6 +94,7 @@ impl Table<u64> {
             q: 4293918721,
             psi: 2004365341,
             n: 2u64.pow(16),
+            n_inv: 4293853201,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -106,6 +111,7 @@ impl Table<u64> {
             // 2^3th root of unity
             psi: 1925,
             n: 2u64.pow(2),
+            n_inv: 5761,
             powers_psi_bo: Vec::with_capacity(2usize.pow(3)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(3)),
         };
@@ -185,7 +191,7 @@ impl Table<u64> {
         let a_len = a.len();
 
         let mut t = 1;
-        let mut m: u64 = a_len as u64;
+        let mut m = a_len;
 
         loop {
             if m == 1 {
@@ -197,7 +203,7 @@ impl Table<u64> {
 
             for i in 0..h {
                 let j_2 = j_1 + t - 1;
-                let cap_s = self.powers_psi_inv_bo[(h + i) as usize];
+                let cap_s = self.powers_psi_inv_bo[h + i];
 
                 for j in j_1..=j_2 {
                     let cap_u = a[j];
@@ -230,9 +236,8 @@ impl Table<u64> {
             m /= 2;
         }
 
-        let n_inv = self.mod_exp(a_len as u64, self.q - 2);
         for a_j in a.iter_mut() {
-            *a_j = self.mul_reduce(*a_j, n_inv);
+            *a_j = self.mul_reduce(*a_j, self.n_inv);
         }
     }
 

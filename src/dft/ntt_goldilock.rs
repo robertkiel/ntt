@@ -8,8 +8,9 @@ pub struct TableGoldilock<O> {
     /// n-th root of unity
     pub psi: O,
     n: O,
-    powers_psi_bo: Vec<u64>,
-    powers_psi_inv_bo: Vec<u64>,
+    n_inv: O,
+    powers_psi_bo: Vec<O>,
+    powers_psi_inv_bo: Vec<O>,
 }
 
 impl DFT<u64> for TableGoldilock<u64> {
@@ -48,6 +49,7 @@ impl TableGoldilock<u64> {
             q: 0xffffffff00000001,
             psi: 0xabd0a6e8aa3d8a0e, //2^17th root of unity
             n: 2u64.pow(16),
+            n_inv: 0xfffeffff00010001,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -192,9 +194,8 @@ impl TableGoldilock<u64> {
             m /= 2;
         }
 
-        let n_inv = self.mod_exp(a_len as u64, self.q - 2);
         for a_j in a.iter_mut() {
-            *a_j = self.mul_reduce(*a_j, n_inv);
+            *a_j = self.mul_reduce(*a_j, self.n_inv);
         }
     }
 
