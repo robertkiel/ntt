@@ -156,10 +156,16 @@ impl Table<u64> {
                     let cap_u = a[j];
                     let cap_v = self.mul_reduce(a[j + t], cap_s);
 
-                    let mut cap_u_add_cap_v = cap_u + cap_v;
-                    if cap_u_add_cap_v > self.q {
-                        cap_u_add_cap_v -= self.q;
-                    }
+                    let cap_u_add_cap_v = match cap_u.overflowing_add(cap_v) {
+                        (res, true) => res.overflowing_sub(self.q).0,
+                        (mut res, false) => {
+                            if res > self.q {
+                                res -= self.q
+                            }
+                            res
+                        }
+                    };
+
                     a[j] = cap_u_add_cap_v;
 
                     let cap_u_sub_cap_v = match cap_u.overflowing_sub(cap_v) {
@@ -197,21 +203,20 @@ impl Table<u64> {
                     let cap_u = a[j];
                     let cap_v = a[j + t];
 
-                    let mut cap_u_add_cap_v = cap_u + cap_v;
+                    let cap_u_add_cap_v = match cap_u.overflowing_add(cap_v) {
+                        (res, true) => res.overflowing_sub(self.q).0,
+                        (mut res, false) => {
+                            if res > self.q {
+                                res -= self.q
+                            }
+                            res
+                        }
+                    };
 
-                    if cap_u_add_cap_v > self.q {
-                        cap_u_add_cap_v -= self.q;
-                    }
                     a[j] = cap_u_add_cap_v;
 
                     let cap_u_sub_cap_v = match cap_u.overflowing_sub(cap_v) {
-                        (res, true) => {
-                            let (inner_res, overflow) = res.overflowing_add(self.q);
-
-                            assert!(overflow);
-
-                            inner_res
-                        }
+                        (res, true) => res.overflowing_add(self.q).0,
                         (res, false) => res,
                     };
 

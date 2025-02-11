@@ -2,17 +2,17 @@ use crate::dft::DFT;
 use crate::utils::bit_reverse;
 use rand::{self, Rng};
 
-pub struct Table<O> {
+pub struct TableGoldilock<O> {
     /// NTT friendly prime modulus
-    q: O,
+    pub q: O,
     /// n-th root of unity
-    psi: O,
+    pub psi: O,
     n: O,
     powers_psi_bo: Vec<u64>,
     powers_psi_inv_bo: Vec<u64>,
 }
 
-impl DFT<u64> for Table<u64> {
+impl DFT<u64> for TableGoldilock<u64> {
     /// NTT forward routine
     ///
     /// - `a`: vector with each element in range `[0, q)`
@@ -42,7 +42,7 @@ impl DFT<u64> for Table<u64> {
     }
 }
 
-impl Table<u64> {
+impl TableGoldilock<u64> {
     pub fn new() -> Self {
         let mut res = Self {
             q: 0xffffffff00000001,
@@ -119,10 +119,15 @@ impl Table<u64> {
                     let cap_u = a[j];
                     let cap_v = self.mul_reduce(a[j + t], cap_s);
 
-                    let mut cap_u_add_cap_v = cap_u + cap_v;
-                    if cap_u_add_cap_v > self.q {
-                        cap_u_add_cap_v -= self.q;
-                    }
+                    let cap_u_add_cap_v = match cap_u.overflowing_add(cap_v) {
+                        (res, true) => res.overflowing_sub(self.q).0,
+                        (mut res, false) => {
+                            if res > self.q {
+                                res -= self.q
+                            }
+                            res
+                        }
+                    };
                     a[j] = cap_u_add_cap_v;
 
                     let cap_u_sub_cap_v = match cap_u.overflowing_sub(cap_v) {
@@ -160,11 +165,16 @@ impl Table<u64> {
                     let cap_u = a[j];
                     let cap_v = a[j + t];
 
-                    let mut cap_u_add_cap_v = cap_u + cap_v;
+                    let cap_u_add_cap_v = match cap_u.overflowing_add(cap_v) {
+                        (res, true) => res.overflowing_sub(self.q).0,
+                        (mut res, false) => {
+                            if res > self.q {
+                                res -= self.q
+                            }
+                            res
+                        }
+                    };
 
-                    if cap_u_add_cap_v > self.q {
-                        cap_u_add_cap_v -= self.q;
-                    }
                     a[j] = cap_u_add_cap_v;
 
                     let cap_u_sub_cap_v = match cap_u.overflowing_sub(cap_v) {
@@ -263,7 +273,7 @@ pub fn u64_to_u128(low: u64, high: u64) -> u128 {
 mod tests {
     use crate::dft::ntt_goldilock::u64_to_u128;
 
-    use super::{u128_to_u64, Table};
+    use super::{u128_to_u64, TableGoldilock};
 
     #[test]
     fn u128_u64_conversion() {
@@ -277,7 +287,7 @@ mod tests {
 
     #[test]
     fn mul_reduce_159() {
-        let table = Table::new();
+        let table = TableGoldilock::new();
 
         // naive multiplication and division
         let naive = |a: u64, b: u64| ((a as u128 * b as u128) % table.q as u128) as u64;
