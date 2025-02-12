@@ -44,6 +44,7 @@ impl DFT<u64> for Table<u64> {
 }
 
 impl Table<u64> {
+    /// Instantiates NTT with base prime
     pub fn new() -> Self {
         let mut res = Self {
             q: 0x1fffffffffe00001u64,
@@ -59,6 +60,8 @@ impl Table<u64> {
         res
     }
 
+    /// Instantiates NTT with a prime that can be used in double float environments,
+    /// i.e. the utlized prime has at most 53 bits
     pub fn new_float_compatible() -> Self {
         let mut res = Self {
             q: 4503599626321921,
@@ -74,6 +77,8 @@ impl Table<u64> {
         res
     }
 
+    /// Instantiates NTT with NTT-friendly prime that allows very
+    /// fast reduction
     pub fn new_goldilock() -> Self {
         let mut res = Self {
             q: 0xffffffff00000001,
@@ -89,6 +94,8 @@ impl Table<u64> {
         res
     }
 
+    /// Instantiates NTT with prime that can be used with 32-bit
+    /// registers, i.e. on AVX2
     pub fn new_u32_compatible() -> Self {
         let mut res = Self {
             q: 4293918721,
@@ -104,6 +111,8 @@ impl Table<u64> {
         res
     }
 
+    /// Instantiates NTT with small prime to check correctness of
+    /// the implementation
     pub fn new_simple() -> Self {
         // Values taken from https://eprint.iacr.org/2024/585.pdf
         let mut res = Self {
