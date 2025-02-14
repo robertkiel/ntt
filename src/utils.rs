@@ -31,6 +31,34 @@ pub fn find_prime_n_primitive_root(bits: u32) -> u64 {
     }
 }
 
+/// Computes `a^-1 mod m` (the multiplicative inverse on the modulus m).
+///
+/// Performs a slightly simplified version of the extended euclidean algorithm.
+///
+/// Prevents the use of bigger types, such as u128, by using the
+/// fast [exponentiation algorithm](https://en.wikipedia.org/wiki/Exponentiation_by_squaring) using `log(m)` additions.
+pub fn egcd(a: i128, m: i128) -> (i128, i128) {
+    let mut r = (a, m);
+    let mut s = (1, 0);
+    let mut t = (0, 1);
+
+    while r.1 != 0 {
+        let q = r.0 / r.1;
+        r = (r.1, (r.0 - q * r.1));
+        s = (s.1, (s.0 - q * s.1));
+        t = (t.1, (t.0 - q * t.1));
+    }
+
+    (s.0, t.0)
+}
+
+#[test]
+#[ignore = "no need to invert r twice"]
+fn test_egcd() {
+    println!("{}", 4293918721 * 1048577 - 2i128.pow(32) * 1048321);
+    println!("{:?}", egcd(4293918721, 2i128.pow(32)))
+}
+
 #[ignore = "no need to find the prime twice"]
 #[test]
 fn find_prime() {
