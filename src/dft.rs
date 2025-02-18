@@ -122,8 +122,6 @@ mod tests {
             .iter()
             .zip(a_avx2.iter())
             .all(|(a, a_avx2)| { *a == *a_avx2 as u64 }));
-
-        panic!()
     }
 
     #[test]
