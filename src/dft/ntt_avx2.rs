@@ -605,57 +605,53 @@ impl TableAVX2 {
         _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), t)
     }
 
+    #[inline]
     unsafe fn montgomery_reduce_vec(&self, a: &mut [i64]) {
         let a_len = a.len();
 
         let mut j = 0;
-        unsafe {
-            loop {
-                if j >= a_len {
-                    break;
-                }
 
-                let res = self.montgomery_reduce_32(_mm256_setr_epi64x(
-                    a[j],
-                    a[j + 1],
-                    a[j + 2],
-                    a[j + 3],
-                ));
-
-                a[j] = _mm256_extract_epi64::<0>(res);
-                a[j + 1] = _mm256_extract_epi64::<1>(res);
-                a[j + 2] = _mm256_extract_epi64::<2>(res);
-                a[j + 3] = _mm256_extract_epi64::<3>(res);
-
-                j += 4;
+        loop {
+            if j >= a_len {
+                break;
             }
+
+            let res =
+                self.montgomery_reduce_32(_mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]));
+
+            a[j] = _mm256_extract_epi64::<0>(res);
+            a[j + 1] = _mm256_extract_epi64::<1>(res);
+            a[j + 2] = _mm256_extract_epi64::<2>(res);
+            a[j + 3] = _mm256_extract_epi64::<3>(res);
+
+            j += 4;
         }
     }
 
+    #[inline]
     unsafe fn to_montgomery(&self, a: __m256i) -> __m256i {
         self.montgomery_reduce_32(_mm256_mul_epu32(self.r_square, a))
     }
 
+    #[inline]
     unsafe fn to_montgomery_vec(&self, a: &mut [i64]) {
         let a_len = a.len();
 
         let mut j = 0;
-        unsafe {
-            loop {
-                if j >= a_len {
-                    break;
-                }
 
-                let res =
-                    self.to_montgomery(_mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]));
-
-                a[j] = _mm256_extract_epi64::<0>(res);
-                a[j + 1] = _mm256_extract_epi64::<1>(res);
-                a[j + 2] = _mm256_extract_epi64::<2>(res);
-                a[j + 3] = _mm256_extract_epi64::<3>(res);
-
-                j += 4;
+        loop {
+            if j >= a_len {
+                break;
             }
+
+            let res = self.to_montgomery(_mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]));
+
+            a[j] = _mm256_extract_epi64::<0>(res);
+            a[j + 1] = _mm256_extract_epi64::<1>(res);
+            a[j + 2] = _mm256_extract_epi64::<2>(res);
+            a[j + 3] = _mm256_extract_epi64::<3>(res);
+
+            j += 4;
         }
     }
 }
