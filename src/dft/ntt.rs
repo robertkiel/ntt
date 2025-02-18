@@ -1,15 +1,25 @@
-use crate::dft::DFT;
 use crate::utils::bit_reverse;
-use rand::{self, Rng};
+use crate::{dft::DFT, utils::mod_exp_u64};
 
 pub struct Table<O> {
     /// NTT friendly prime modulus
     pub q: O,
     /// n-th root of unity
     pub psi: O,
+    /// Which root of unity `psi` is
     n: O,
-    n_inv: O,
+    /// Multiplicative inverse of n in Montgomery form
+    n_inv_montgomery: O,
+    /// Value such that `q * k + 2^bit_len(O) * r' = 1` for some integer r.
+    /// Needed for Montgomery multiplication
+    k: O,
+    /// Precomputed value `( 2^bit_len(O) ^ 2 ) mod q`.
+    /// Needed for quick Montgomery transformation
+    r_square: O,
+    /// Precomputed powers of psi in Montgomery form and stored in bit-reversed order
     powers_psi_bo: Vec<u64>,
+    /// Precomputed powers of the multiplicative inverse of psi in Montgomery form
+    /// and stored in bit-reversed order
     powers_psi_inv_bo: Vec<u64>,
 }
 
@@ -50,24 +60,9 @@ impl Table<u64> {
             q: 0x1fffffffffe00001u64,
             psi: 0x15eb043c7aa2b01fu64, //2^17th root of unity
             n: 2u64.pow(16),
-            n_inv: 0x1fffdfffffe00021,
-            powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
-            powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
-        };
-
-        res.with_precomputes();
-
-        res
-    }
-
-    /// Instantiates NTT with a prime that can be used in double float environments,
-    /// i.e. the utlized prime has at most 53 bits
-    pub fn new_float_compatible() -> Self {
-        let mut res = Self {
-            q: 4503599626321921,
-            psi: 4183818951195512,
-            n: 2u64.pow(16),
-            n_inv: 4503530906845201,
+            n_inv_montgomery: 281474976710656,
+            k: 6917533425689690113,
+            r_square: 0xfffff0000040,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -84,7 +79,9 @@ impl Table<u64> {
             q: 0xffffffff00000001,
             psi: 0xabd0a6e8aa3d8a0e, //2^17th root of unity
             n: 2u64.pow(16),
-            n_inv: 0xfffeffff00010001,
+            n_inv_montgomery: 281474976710656,
+            k: 4294967297,
+            r_square: 18446744065119617025,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -101,7 +98,9 @@ impl Table<u64> {
             q: 4293918721,
             psi: 2004365341,
             n: 2u64.pow(16),
-            n_inv: 4293853201,
+            n_inv_montgomery: 16711664,
+            k: 1143915400569815041,
+            r_square: 2564090464,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
         };
@@ -120,7 +119,9 @@ impl Table<u64> {
             // 2^3th root of unity
             psi: 1925,
             n: 2u64.pow(2),
-            n_inv: 5761,
+            n_inv_montgomery: 1391,
+            k: 13079152223072805377,
+            r_square: 3666,
             powers_psi_bo: Vec::with_capacity(2usize.pow(3)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(3)),
         };
@@ -130,26 +131,12 @@ impl Table<u64> {
         res
     }
 
-    fn mod_exp(&self, base: u64, mut exp: u64) -> u64 {
-        let mut out = 1;
-
-        let mut acc = base;
-
-        while exp > 0 {
-            if exp % 2 == 1 {
-                out = ((out as u128 * acc as u128) % self.q as u128) as u64;
-            }
-
-            acc = ((acc as u128 * acc as u128) % self.q as u128) as u64;
-
-            exp >>= 1;
-        }
-
-        out
-    }
-
     pub fn forward_inplace_core<const LAZY: bool>(&self, a: &mut [u64]) {
         let a_len = a.len();
+
+        for a_j in a.iter_mut() {
+            *a_j = self.to_montgomery(*a_j);
+        }
 
         let mut t = a_len;
         let mut m = 1;
@@ -169,7 +156,7 @@ impl Table<u64> {
 
                 for j in j_1..=j_2 {
                     let cap_u = a[j];
-                    let cap_v = self.mul_reduce(a[j + t], cap_s);
+                    let cap_v = self.montgomery_mul(a[j + t], cap_s);
 
                     let cap_u_add_cap_v = match cap_u.overflowing_add(cap_v) {
                         (res, true) => res.overflowing_sub(self.q).0,
@@ -188,16 +175,24 @@ impl Table<u64> {
                         (res, false) => res,
                     };
 
-                    a[j + t] = cap_u_sub_cap_v % self.q;
+                    a[j + t] = cap_u_sub_cap_v;
                 }
             }
 
             m *= 2;
         }
+
+        for a_j in a.iter_mut() {
+            *a_j = self.montgomery_reduce(*a_j as u128)
+        }
     }
 
     pub fn backward_inplace_core<const LAZY: bool>(&self, a: &mut [u64]) {
         let a_len = a.len();
+
+        for a_j in a.iter_mut() {
+            *a_j = self.to_montgomery(*a_j);
+        }
 
         let mut t = 1;
         let mut m = a_len;
@@ -235,7 +230,7 @@ impl Table<u64> {
                         (res, false) => res,
                     };
 
-                    a[j + t] = self.mul_reduce(cap_u_sub_cap_v, cap_s);
+                    a[j + t] = self.montgomery_mul(cap_u_sub_cap_v, cap_s);
                 }
                 j_1 += 2 * t;
             }
@@ -246,20 +241,40 @@ impl Table<u64> {
         }
 
         for a_j in a.iter_mut() {
-            *a_j = self.mul_reduce(*a_j, self.n_inv);
+            *a_j = self.montgomery_reduce(self.montgomery_mul(*a_j, self.n_inv_montgomery) as u128);
         }
     }
 
+    pub fn montgomery_reduce(&self, a: u128) -> u64 {
+        // m = ((a mod 2^64) * k) mod 2^64
+        let m = ((a & 0xffffffffffffffff) * self.k as u128) & 0xffffffffffffffff;
+
+        let m_n = m * self.q as u128;
+
+        let y = (a.overflowing_sub(m_n).0 >> 64) as u64;
+
+        if a < m_n {
+            y.overflowing_add(self.q).0
+        } else {
+            y
+        }
+    }
+
+    pub fn to_montgomery(&self, a: u64) -> u64 {
+        self.montgomery_reduce(a as u128 * self.r_square as u128)
+    }
+
     #[inline]
-    fn mul_reduce(&self, a: u64, b: u64) -> u64 {
-        ((a as u128 * b as u128) % self.q as u128) as u64
+    fn montgomery_mul(&self, a: u64, b: u64) -> u64 {
+        self.montgomery_reduce(a as u128 * b as u128)
     }
 
     fn with_precomputes(&mut self) {
-        let psi_inv = self.mod_exp(self.psi, self.q - 2);
+        let psi_inv_montgomery = self.to_montgomery(mod_exp_u64(self.psi, self.q - 2, self.q));
+        let psi_montgomery = self.to_montgomery(self.psi);
 
-        let mut tmp_psi = 1u64;
-        let mut tmp_psi_inv = 1u64;
+        let mut tmp_psi = self.to_montgomery(1);
+        let mut tmp_psi_inv = self.to_montgomery(1);
 
         self.powers_psi_bo.resize(self.n as usize, 0);
         self.powers_psi_inv_bo.resize(self.n as usize, 0);
@@ -271,25 +286,8 @@ impl Table<u64> {
             self.powers_psi_bo[reversed_index] = tmp_psi;
             self.powers_psi_inv_bo[reversed_index] = tmp_psi_inv;
 
-            tmp_psi = self.mul_reduce(tmp_psi, self.psi);
-            tmp_psi_inv = self.mul_reduce(tmp_psi_inv, psi_inv);
-        }
-    }
-
-    /// Finds a nth root of unity. Can be computed once and then cached.
-    pub fn find_nth_unity_root(&self, n: u64, m: u64) -> u64 {
-        let mut rand = rand::rng();
-
-        let mut tmp;
-        loop {
-            tmp = rand.random_range(2..m);
-
-            let g = self.mod_exp(tmp, (m - 1) / n);
-
-            match self.mod_exp(g, n / 2) {
-                1 => continue,
-                _ => break g,
-            }
+            tmp_psi = self.montgomery_mul(tmp_psi, psi_montgomery);
+            tmp_psi_inv = self.montgomery_mul(tmp_psi_inv, psi_inv_montgomery);
         }
     }
 }
@@ -298,7 +296,7 @@ impl Table<u64> {
 mod tests {
     use rand::Rng;
 
-    use crate::dft::DFT;
+    use crate::{dft::DFT, utils::mod_exp_u64};
 
     use super::Table;
 
@@ -306,9 +304,65 @@ mod tests {
     fn test_mod_exp() {
         let table = Table::<u64>::new_simple();
 
-        let res = table.mod_exp(4, table.q - 2);
+        let res = mod_exp_u64(4, table.q - 2, table.q);
 
         assert_eq!(res, 5761);
+    }
+
+    #[test]
+    fn montgomery_transformation() {
+        let table = Table::<u64>::new();
+
+        let values = [1u64, 16777208u64];
+
+        for val in values {
+            assert_eq!(
+                val,
+                table.montgomery_reduce(table.to_montgomery(val) as u128)
+            );
+        }
+    }
+
+    #[test]
+    fn montgomery_transformation_goldilock() {
+        let table = Table::<u64>::new_goldilock();
+
+        let values = [1u64, 16777208u64];
+
+        for val in values {
+            assert_eq!(
+                val,
+                table.montgomery_reduce(table.to_montgomery(val) as u128)
+            );
+        }
+    }
+
+    #[test]
+    fn montgomery_transformation_u32_compatible() {
+        let table = Table::<u64>::new_u32_compatible();
+
+        let values = [1u64, 16777208u64];
+
+        for val in values {
+            assert_eq!(
+                val,
+                table.montgomery_reduce(table.to_montgomery(val) as u128)
+            );
+        }
+    }
+
+    #[test]
+    fn montgomery_transformation_simple() {
+        let table = Table::<u64>::new_simple();
+
+        let values = [1u64, 1904u64];
+
+        for val in values {
+            assert_eq!(
+                val,
+                table.montgomery_reduce(table.to_montgomery(val) as u128)
+            );
+        }
     }
 
     #[test]

@@ -22,9 +22,9 @@ mod tests {
     #[test]
     fn base_version() {
         let mut rng = rand::rng();
-        let table = Table::<u64>::new();
+        let table = Table::<u64>::new_goldilock();
 
-        let mut a = [0u64; 2u64.pow(2) as usize];
+        let mut a = [0u64; 2u64.pow(16) as usize];
 
         for a_j in a.iter_mut() {
             *a_j = rng.random_range(0..table.q);
@@ -53,6 +53,7 @@ mod tests {
             *a_j = rng.random_range(0..table_avx.q);
         }
         let mut a = a_avx2.iter().map(|x| *x as u64).collect::<Vec<u64>>();
+        let a_cloned = a.clone();
 
         table.forward_inplace(&mut a);
         table_avx.forward_inplace(&mut a_avx2);
@@ -69,6 +70,11 @@ mod tests {
             .iter()
             .zip(a_avx2.iter())
             .all(|(a, a_avx2)| *a == *a_avx2 as u64));
+
+        assert!(a
+            .iter()
+            .zip(a_cloned.iter())
+            .all(|(a, a_cloned)| { *a == *a_cloned }));
     }
 
     #[test]
@@ -98,7 +104,10 @@ mod tests {
         }
         println!("base {}ms", now.elapsed().unwrap().as_millis());
 
-        assert_eq!(a_cloned, a);
+        assert!(a
+            .iter()
+            .zip(a_cloned.iter())
+            .all(|(a, a_cloned)| { *a == *a_cloned }));
 
         let now = SystemTime::now();
 
@@ -107,7 +116,7 @@ mod tests {
 
             table_avx.backward_inplace(&mut a_avx2);
         }
-        println!("AVX2 {}", now.elapsed().unwrap().as_millis());
+        println!("AVX2 {}ms", now.elapsed().unwrap().as_millis());
 
         assert!(a_cloned
             .iter()
@@ -166,7 +175,7 @@ mod tests {
 
             table.backward_inplace(&mut a);
         }
-        println!("base {}", now.elapsed().unwrap().as_millis());
+        println!("base {}ms", now.elapsed().unwrap().as_millis());
 
         let now = SystemTime::now();
 
@@ -175,7 +184,7 @@ mod tests {
 
             table_goldilock.backward_inplace(&mut a_goldilock);
         }
-        println!("goldilock {}", now.elapsed().unwrap().as_millis());
+        println!("goldilock {}ms", now.elapsed().unwrap().as_millis());
 
         assert_eq!(a_cloned, a);
     }

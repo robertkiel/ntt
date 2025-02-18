@@ -1,4 +1,5 @@
 use num_primes::{BigUint, Verification};
+use rand::{self, Rng};
 
 /// Computes the bit-reversal of the given number `n` depending on the `bits` of the maximum expected number of `n`.
 ///
@@ -52,11 +53,69 @@ pub fn egcd(a: i128, m: i128) -> (i128, i128) {
     (s.0, t.0)
 }
 
+#[macro_export]
+macro_rules! make_mod_exp {
+    ($t:ty, $t_larger:ty, $name:ident) => {
+        /// Computes `base ^ exponent mod modulus` using fast exponentiation by squaring.
+        ///
+        /// The method is expected to be used for precomputable values only.
+        pub fn $name(base: $t, mut exp: $t, modulus: $t) -> $t {
+            let mut out = 1;
+
+            let mut acc = base;
+
+            while exp > 0 {
+                if exp % 2 == 1 {
+                    out = ((out as $t_larger * acc as $t_larger) % modulus as $t_larger) as $t;
+                }
+
+                acc = ((acc as $t_larger * acc as $t_larger) % modulus as $t_larger) as $t;
+
+                exp >>= 1;
+            }
+
+            out
+        }
+    };
+}
+
+make_mod_exp!(u64, u128, mod_exp_u64);
+make_mod_exp!(i64, i128, mod_exp_i64);
+
+#[macro_export]
+macro_rules! make_find_nth_root {
+    ($t: ty, $name:ident, $mod_exp:ident) => {
+        /// Finds a nth root of unity.
+        ///
+        /// This method is expected to be used for precomputable values only.
+        pub fn $name(n: $t, modulus: $t) -> $t {
+            let mut rand = rand::rng();
+
+            let mut tmp;
+            loop {
+                tmp = rand.random_range(2..modulus);
+
+                let g = $mod_exp(tmp, (modulus - 1) / n, modulus);
+
+                match $mod_exp(g, n / 2, modulus) {
+                    1 => continue,
+                    _ => break g,
+                }
+            }
+        }
+    };
+}
+
+make_find_nth_root!(u64, find_nth_unity_root_u64, mod_exp_u64);
+make_find_nth_root!(i64, find_nth_unity_root_i64, mod_exp_i64);
+
 #[test]
-#[ignore = "no need to invert r twice"]
+// #[ignore = "no need to invert r twice"]
 fn test_egcd() {
-    println!("{}", 4293918721 * 1048577 - 2i128.pow(32) * 1048321);
-    println!("{:?}", egcd(4293918721, 2i128.pow(32)))
+    // println!("{}", 4293918721 * 1048577 - 2i128.pow(32) * 1048321);
+    // println!("{:?}", egcd(4293918721, 2i128.pow(32)))
+    println!("{:?}", egcd(0xffffffff00000001, 2i128.pow(64)));
+    // println!("{:?}", 2i128.pow(64) - 5367591850636746239);
 }
 
 #[ignore = "no need to find the prime twice"]
