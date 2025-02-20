@@ -245,6 +245,7 @@ impl Table<u64> {
         }
     }
 
+    /// Montgomery reduction using R=2^64-1
     pub fn montgomery_reduce(&self, a: u128) -> u64 {
         // m = ((a mod 2^64) * k) mod 2^64
         let m = ((a & 0xffffffffffffffff) * self.k as u128) & 0xffffffffffffffff;
@@ -260,15 +261,18 @@ impl Table<u64> {
         }
     }
 
+    /// Transforms a into Montgomery form using R=2^64-1
     pub fn to_montgomery(&self, a: u64) -> u64 {
         self.montgomery_reduce(a as u128 * self.r_square as u128)
     }
 
+    /// Performs a Montgomery multiplication, assuming that both `a` and `b` and in Montgomery form
     #[inline]
     fn montgomery_mul(&self, a: u64, b: u64) -> u64 {
         self.montgomery_reduce(a as u128 * b as u128)
     }
 
+    /// Computes and stores precomputable values, especially powers of `psi`.
     fn with_precomputes(&mut self) {
         let psi_inv_montgomery = self.to_montgomery(mod_exp_u64(self.psi, self.q - 2, self.q));
         let psi_montgomery = self.to_montgomery(self.psi);

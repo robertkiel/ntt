@@ -4,11 +4,20 @@ Implemented features:
 
 - standard, FFT forward & backward, various primes
 - AVX2 for 32bit primes, FFT forward & backward
+- Montgomery multiplication and transformation for both AVX2 and base code
 - Goldilock, FFT forward & backward
 
 TODO:
 
 - extend AVX2 `a * b mod p` for primes <= 2^64 - 1 using Karatsuba
+
+### Testing (& benchmarking)
+
+AVX2 against base implementation
+
+`RUSTFLAGS='-C target-cpu=native' cargo test -p ntt -r avx_against_base`
+
+Make sure to add `RUSTFLAGS='-C target-cpu=native'`. This ensures that the Rust compiler uses intrinsics and does not transpile intrinsics to vanilla x86_64 bytecode.
 
 ## Introduction
 

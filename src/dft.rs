@@ -94,10 +94,8 @@ mod tests {
         // check if backward(forward(a)) == a
         let a_cloned = a.clone();
 
-        // assert_eq!(a, a_avx2);
-
         let now = SystemTime::now();
-        for _ in 0..10 {
+        for _ in 0..30 {
             table.forward_inplace(&mut a);
 
             table.backward_inplace(&mut a);
@@ -111,17 +109,20 @@ mod tests {
 
         let now = SystemTime::now();
 
-        for _ in 0..10 {
+        for _ in 0..30 {
             table_avx.forward_inplace(&mut a_avx2);
 
             table_avx.backward_inplace(&mut a_avx2);
         }
+
         println!("AVX2 {}ms", now.elapsed().unwrap().as_millis());
 
         assert!(a_cloned
             .iter()
             .zip(a_avx2.iter())
             .all(|(a, a_avx2)| { *a == *a_avx2 as u64 }));
+
+        panic!("here to always see stdout output")
     }
 
     #[test]

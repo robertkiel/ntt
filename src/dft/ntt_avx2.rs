@@ -581,6 +581,7 @@ impl TableAVX2 {
         ((a as u64 * b as u64) % self.q as u64) as i64
     }
 
+    /// Computes Montgomery reduction using R=2^32-1
     #[inline]
     unsafe fn montgomery_reduce_32(&self, mut t: __m256i) -> __m256i {
         // m = (t mod 2^32) * k mod 2^32
@@ -605,6 +606,7 @@ impl TableAVX2 {
         _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), t)
     }
 
+    /// Compute an inplace Montgomery reduction for a vector, using R=2^32-1
     #[inline]
     unsafe fn montgomery_reduce_vec(&self, a: &mut [i64]) {
         let a_len = a.len();
@@ -628,11 +630,13 @@ impl TableAVX2 {
         }
     }
 
+    /// Transforms a value into Montgomery form, using R=2^32-1
     #[inline]
     unsafe fn to_montgomery(&self, a: __m256i) -> __m256i {
         self.montgomery_reduce_32(_mm256_mul_epu32(self.r_square, a))
     }
 
+    /// Transforms a vector into Montgomery form using R=2^32-1
     #[inline]
     unsafe fn to_montgomery_vec(&self, a: &mut [i64]) {
         let a_len = a.len();
@@ -679,77 +683,6 @@ pub fn extract_m256d_to_f64(a: &__m256d) -> [f64; 4] {
     res
 }
 
-/// Converts AVX2 floats (double precision) to AVX2 32-bit integers stored in AVX2 64-bit register, very handy for testing.
-///
-/// The 32-bit integers must be arranged as `(0, a, 0, b, 0, c, 0, d)`.
-#[inline]
-pub fn m256d_to_m256i(a: &__m256d) -> __m256i {
-    unsafe {
-        let packed = _mm256_cvtpd_epi32(*a);
-
-        let unpacked_raw = _mm256_set_m128i(
-            _mm_shuffle_epi32::<0b11_00_10_00>(packed),
-            _mm_shuffle_epi32::<0b01_00_00_00>(packed),
-        );
-
-        _mm256_srli_epi64(unpacked_raw, 32)
-    }
-}
-
-/// Converts AVX2 32-bit integers to AVX2 floats (double precision), very handy for testing
-#[inline]
-pub fn m256i_to_m256d(a: &__m256i) -> __m256d {
-    unsafe {
-        let shuffled = _mm_or_si128(
-            _mm256_extracti128_si256(_mm256_shuffle_epi32::<0b10_00_11_01>(*a), 1),
-            _mm256_castsi256_si128(_mm256_shuffle_epi32::<0b11_01_10_00>(*a)),
-        );
-
-        _mm256_cvtepi32_pd(shuffled)
-    }
-}
-
-pub unsafe fn a_add_b_overflow(a: __m256i, b: __m256i) -> (__m256i, __m256i) {
-    let sum = _mm256_add_epi64(a, b);
-
-    // a < 0 && sum >= 0
-    // b < 0 && sum >= 0
-    //
-    // a < 0 && b < 0 && sum < a
-    // a < 0 && b < 0 && sum < b
-    //
-    let a_lt_0 = _mm256_cmpgt_epi64(_mm256_setzero_si256(), a);
-    let b_lt_0 = _mm256_cmpgt_epi64(_mm256_setzero_si256(), b);
-
-    let sum_ge_0 = _mm256_or_si256(
-        _mm256_cmpeq_epi64(sum, _mm256_setzero_si256()),
-        _mm256_cmpgt_epi64(sum, _mm256_setzero_si256()),
-    );
-
-    let a_lt_0_and_sum_ge_0 = _mm256_and_si256(a_lt_0, sum_ge_0);
-    let b_lt_0_and_sum_ge_0 = _mm256_and_si256(b_lt_0, sum_ge_0);
-
-    let a_lt_0_and_b_lt_0 = _mm256_and_si256(a_lt_0, a_lt_0);
-
-    let sum_lt_a = _mm256_cmpgt_epi64(a, sum);
-    let sum_lt_b = _mm256_cmpgt_epi64(b, sum);
-
-    let a_lt_0_and_b_lt_0_and_sum_lt_a = _mm256_and_si256(a_lt_0_and_b_lt_0, sum_lt_a);
-    let a_lt_0_and_b_lt_0_and_sum_lt_b = _mm256_and_si256(a_lt_0_and_b_lt_0, sum_lt_b);
-
-    let overflow_mask = _mm256_or_si256(
-        _mm256_or_si256(a_lt_0_and_sum_ge_0, b_lt_0_and_sum_ge_0),
-        _mm256_or_si256(
-            a_lt_0_and_b_lt_0_and_sum_lt_a,
-            a_lt_0_and_b_lt_0_and_sum_lt_b,
-        ),
-    );
-
-    let overflow = _mm256_and_si256(_mm256_set1_epi64x(1), overflow_mask);
-
-    (overflow, sum)
-}
-
 /// Compute `a < b ? 0xFF..FF : 0`, treating _signed_ integers as _unsigned_ integers
 pub unsafe fn a_le_b(a: __m256i, b: __m256i) -> __m256i {
     let a_lt_0 = _mm256_cmpgt_epi64(_mm256_setzero_si256(), a);
@@ -775,10 +708,7 @@ mod tests {
 
     use crate::dft::ntt_avx2::a_le_b;
 
-    use super::{
-        a_add_b_overflow, extract_m256d_to_f64, extract_m256i_to_i64, m256d_to_m256i,
-        m256i_to_m256d, TableAVX2, U32_PRIME,
-    };
+    use super::{extract_m256d_to_f64, extract_m256i_to_i64, TableAVX2, U32_PRIME};
 
     #[test]
     fn extract_u64() {
@@ -797,24 +727,6 @@ mod tests {
         let res = extract_m256d_to_f64(&data);
 
         assert_eq!(res, [1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn m256d_to_m256i_conversion() {
-        let data = unsafe { _mm256_setr_pd(1.0, 2.0, 3.0, 4.0) };
-
-        let res = m256d_to_m256i(&data);
-
-        assert_eq!(extract_m256i_to_i64(&res), [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn m256i_to_m256d_conversion() {
-        let data = unsafe { _mm256_setr_epi64x(1, 2, 3, 4) };
-
-        let res = m256i_to_m256d(&data);
-
-        assert_eq!(extract_m256d_to_f64(&res), [1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
@@ -864,18 +776,6 @@ mod tests {
         };
 
         assert_eq!([1, 0, -1, 0], extract_m256i_to_i64(&control))
-    }
-
-    #[test]
-    fn overflow_addition() {
-        let (high, low) = unsafe {
-            let a = _mm256_setr_epi64x(-1, -1, 1, i64::MIN);
-            let b = _mm256_setr_epi64x(1, -1, -1, i64::MIN);
-
-            a_add_b_overflow(a, b)
-        };
-
-        println!("high {high:?}, low {low:?}");
     }
 
     #[test]
