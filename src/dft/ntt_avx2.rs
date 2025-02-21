@@ -1,16 +1,11 @@
+//! NTT implementation using AVX2 instruction for enhanced performance
+
 use crate::dft::DFT;
 use crate::utils::{bit_reverse, mod_exp_i64};
 use std::arch::x86_64::*;
 
-// prime to be used in the 51-bit setting
-// TODO: make mulmod compatible with values > 32 bits, e.g. use Karatsuba multiplication
-// pub const DOUBLE_PRIME: f64 = 4503599626321921.0;
-
-/// NTT-friendly prime with 2^20 roots of unity
-pub const U32_PRIME: i64 = 4293918721;
-
 pub struct TableAVX2 {
-    /// The NTT modulus. This implementation support primes with <=32 bits
+    /// The NTT modulus. This implementation support primes with <= 61 bits
     pub q: i64,
     /// N-th root of unity
     pub psi: i64,
@@ -20,7 +15,7 @@ pub struct TableAVX2 {
     r_square: __m256i,
     // ------ internals, mostly caching --------
     /// inverse of n, in AVX2 struct
-    n_inv: __m256i,
+    n_inv_montgomery: __m256i,
     /// q as AVX2 integer vector
     q_vec: __m256i,
     /// powers of psi in byte order
@@ -63,13 +58,13 @@ impl TableAVX2 {
     pub fn new() -> Self {
         let n = 2usize.pow(16);
         let mut res = Self {
-            q: U32_PRIME,
-            q_vec: unsafe { _mm256_set1_epi64x(U32_PRIME as i64) },
-            psi: 2004365341,
+            q: 0x1fffffffffe00001,
+            q_vec: unsafe { _mm256_set1_epi64x(0x1fffffffffe00001) },
+            psi: 0x15eb043c7aa2b01f,
             n,
-            r_square: unsafe { _mm256_set1_epi64x((2u128.pow(64) % U32_PRIME as u128) as i64) },
-            k_vec: unsafe { _mm256_set1_epi64x(1048577) },
-            n_inv: unsafe { _mm256_set1_epi64x(65536) },
+            r_square: unsafe { _mm256_set1_epi64x(0xfffff0000040) },
+            k_vec: unsafe { _mm256_set1_epi64x(6917533425689690113) },
+            n_inv_montgomery: unsafe { _mm256_set1_epi64x(281474976710656) },
             // -- precomputed powers of psi
             powers_psi_bo: Vec::with_capacity(n),
             // -- precomputed powers of inv_psi
@@ -120,7 +115,7 @@ impl TableAVX2 {
                             a[2 * (i + 3) + 1],
                         );
 
-                        self.ntt_kernel_4(
+                        self.cs_butterfly_simd_4(
                             &self.to_montgomery(_mm256_setr_epi64x(
                                 self.powers_psi_bo[m + i],
                                 self.powers_psi_bo[m + i + 1],
@@ -165,7 +160,7 @@ impl TableAVX2 {
                         let mut a_j_t =
                             _mm256_setr_epi64x(a[j_i1_t], a[j_i1_t + 1], a[j_i2_t], a[j_i2_t + 1]);
 
-                        self.ntt_kernel_4(
+                        self.cs_butterfly_simd_4(
                             &self.to_montgomery(_mm256_setr_epi64x(
                                 self.powers_psi_bo[m + i],
                                 self.powers_psi_bo[m + i],
@@ -213,7 +208,7 @@ impl TableAVX2 {
                                     a[j + t + 3],
                                 );
 
-                                self.ntt_kernel_4(
+                                self.cs_butterfly_simd_4(
                                     &self.to_montgomery(_mm256_set1_epi64x(cap_s)),
                                     &mut a_j,
                                     &mut a_j_t,
@@ -239,7 +234,7 @@ impl TableAVX2 {
                         }
 
                         // only used for uncommon values of n
-                        let (a_j, a_j_t) = self.ntt_kernel_1(cap_s, a[j], a[j + t]);
+                        let (a_j, a_j_t) = self.cs_butterfly(cap_s, a[j], a[j + t]);
 
                         a[j] = a_j;
                         a[j + t] = a_j_t;
@@ -294,7 +289,7 @@ impl TableAVX2 {
                             a[2 * (i + 3) + 1],
                         );
 
-                        self.intt_kernel_4(
+                        self.gs_butterfly_simd_4(
                             &self.to_montgomery(_mm256_setr_epi64x(
                                 self.powers_psi_inv_bo[h + i],
                                 self.powers_psi_inv_bo[h + i + 1],
@@ -339,7 +334,7 @@ impl TableAVX2 {
                         let mut a_j_t =
                             _mm256_setr_epi64x(a[j_i1_t], a[j_i1_t + 1], a[j_i2_t], a[j_i2_t + 1]);
 
-                        self.intt_kernel_4(
+                        self.gs_butterfly_simd_4(
                             &self.to_montgomery(_mm256_setr_epi64x(
                                 self.powers_psi_inv_bo[h + i],
                                 self.powers_psi_inv_bo[h + i],
@@ -385,7 +380,7 @@ impl TableAVX2 {
                                     a[j + t + 3],
                                 );
 
-                                self.intt_kernel_4(
+                                self.gs_butterfly_simd_4(
                                     &self.to_montgomery(_mm256_set1_epi64x(cap_s)),
                                     &mut a_j,
                                     &mut a_j_t,
@@ -410,7 +405,7 @@ impl TableAVX2 {
                             break;
                         }
 
-                        let (a_j, a_j_t) = self.intt_kernel_1(cap_s, a[j], a[j + t]);
+                        let (a_j, a_j_t) = self.gs_butterfly(cap_s, a[j], a[j + t]);
 
                         a[j] = a_j;
                         a[j + t] = a_j_t;
@@ -432,7 +427,10 @@ impl TableAVX2 {
                 }
 
                 let a_j = _mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]);
-                let res = self.montgomery_reduce_32(self.montgomery_mul_vec(&a_j, &self.n_inv));
+                let res = self.montgomery_reduce_64(
+                    _mm256_setzero_si256(),
+                    self.montgomery_mul_vec(&a_j, &self.n_inv_montgomery),
+                );
                 a[j] = _mm256_extract_epi64::<0>(res);
                 a[j + 1] = _mm256_extract_epi64::<1>(res);
                 a[j + 2] = _mm256_extract_epi64::<2>(res);
@@ -444,7 +442,7 @@ impl TableAVX2 {
     }
 
     /// Computes the CT butterfly
-    fn ntt_kernel_1(&self, cap_s: i64, mut a_j: i64, mut a_j_t: i64) -> (i64, i64) {
+    fn cs_butterfly(&self, cap_s: i64, mut a_j: i64, mut a_j_t: i64) -> (i64, i64) {
         // classic
         let cap_u = a_j;
         let cap_v = self.mul_reduce(a_j_t, cap_s);
@@ -466,7 +464,7 @@ impl TableAVX2 {
         (a_j, a_j_t)
     }
 
-    fn intt_kernel_1(&self, cap_s: i64, mut a_j: i64, mut a_j_t: i64) -> (i64, i64) {
+    fn gs_butterfly(&self, cap_s: i64, mut a_j: i64, mut a_j_t: i64) -> (i64, i64) {
         let cap_u = a_j;
         let cap_v = a_j_t;
 
@@ -489,7 +487,7 @@ impl TableAVX2 {
 
     /// Computes the CT butterfly using AVX2.
     #[inline]
-    unsafe fn ntt_kernel_4(&self, cap_s: &__m256i, a_j: &mut __m256i, a_j_t: &mut __m256i) {
+    unsafe fn cs_butterfly_simd_4(&self, cap_s: &__m256i, a_j: &mut __m256i, a_j_t: &mut __m256i) {
         let cap_u = *a_j;
 
         let cap_v = self.montgomery_mul_vec(a_j_t, cap_s);
@@ -508,7 +506,7 @@ impl TableAVX2 {
 
     /// Computes the GS butterly using AVX2
     #[inline]
-    unsafe fn intt_kernel_4(&self, cap_s: &__m256i, a_j: &mut __m256i, a_j_t: &mut __m256i) {
+    unsafe fn gs_butterfly_simd_4(&self, cap_s: &__m256i, a_j: &mut __m256i, a_j_t: &mut __m256i) {
         let cap_u = *a_j;
         let cap_v = *a_j_t;
 
@@ -527,9 +525,9 @@ impl TableAVX2 {
     #[inline]
     unsafe fn montgomery_mul_vec(&self, a: &__m256i, b: &__m256i) -> __m256i {
         // product = (u64) a * b
-        let product = _mm256_mul_epu32(*a, *b);
+        let (high, low) = a_mul_b_karatsuba(*a, *b);
 
-        self.montgomery_reduce_32(product)
+        self.montgomery_reduce_64(high, low)
     }
 
     /// Computes `a mod q` for the case that `a >= q`, i.e. subtracting `q` from it using AVX2
@@ -578,35 +576,32 @@ impl TableAVX2 {
     /// Computes a * b mod self.q
     #[inline]
     fn mul_reduce(&self, a: i64, b: i64) -> i64 {
-        ((a as u64 * b as u64) % self.q as u64) as i64
+        ((a as u128 * b as u128) % self.q as u128) as i64
     }
 
     /// Computes Montgomery reduction using R=2^32-1
     #[inline]
-    unsafe fn montgomery_reduce_32(&self, mut t: __m256i) -> __m256i {
+    unsafe fn montgomery_reduce_64(&self, t_high: __m256i, mut t_low: __m256i) -> __m256i {
         // m = (t mod 2^32) * k mod 2^32
-        let m = _mm256_and_si256(
-            _mm256_set1_epi64x(0xffffffff),
-            _mm256_mul_epu32(t, self.k_vec),
-        );
+        let (_, m_low) = a_mul_b_karatsuba(t_low, self.k_vec);
 
         // m_n = (u64) m * self.q
-        let m_n = _mm256_mul_epu32(m, self.q_vec);
+        let (m_n_high, m_n_low) = a_mul_b_karatsuba(m_low, self.q_vec);
 
         // y = (t - m_n) / 2^32
-        let y = _mm256_srli_epi64::<32>(_mm256_sub_epi64(t, m_n));
+        let y = a_sub_b(t_high, t_low, m_n_high, m_n_low).0;
 
         // mask = (u64) x < (u64) m
-        let mask = _mm256_and_si256(a_le_b(t, m_n), self.q_vec);
+        let mask = _mm256_and_si256(a_lt_b_wide(t_high, t_low, m_n_high, m_n_low), self.q_vec);
 
         // t = t < m_n ? t + self.q : t
-        t = _mm256_add_epi64(mask, y);
+        t_low = _mm256_add_epi64(mask, y);
 
         // t = t mod 2^32
-        _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), t)
+        t_low
     }
 
-    /// Compute an inplace Montgomery reduction for a vector, using R=2^32-1
+    /// Performs a Montgomery reduction on all values of the given vector.
     #[inline]
     unsafe fn montgomery_reduce_vec(&self, a: &mut [i64]) {
         let a_len = a.len();
@@ -618,8 +613,10 @@ impl TableAVX2 {
                 break;
             }
 
-            let res =
-                self.montgomery_reduce_32(_mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]));
+            let res = self.montgomery_reduce_64(
+                _mm256_setzero_si256(),
+                _mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]),
+            );
 
             a[j] = _mm256_extract_epi64::<0>(res);
             a[j + 1] = _mm256_extract_epi64::<1>(res);
@@ -630,13 +627,15 @@ impl TableAVX2 {
         }
     }
 
-    /// Transforms a value into Montgomery form, using R=2^32-1
+    /// Transforms the given value to Montgomery form
     #[inline]
     unsafe fn to_montgomery(&self, a: __m256i) -> __m256i {
-        self.montgomery_reduce_32(_mm256_mul_epu32(self.r_square, a))
+        let (high, low) = a_mul_b_karatsuba(a, self.r_square);
+
+        self.montgomery_reduce_64(high, low)
     }
 
-    /// Transforms a vector into Montgomery form using R=2^32-1
+    /// Transforms a vector into Montgomery form
     #[inline]
     unsafe fn to_montgomery_vec(&self, a: &mut [i64]) {
         let a_len = a.len();
@@ -683,8 +682,8 @@ pub fn extract_m256d_to_f64(a: &__m256d) -> [f64; 4] {
     res
 }
 
-/// Compute `a < b ? 0xFF..FF : 0`, treating _signed_ integers as _unsigned_ integers
-pub unsafe fn a_le_b(a: __m256i, b: __m256i) -> __m256i {
+/// Computes `a < b ? 0xFF..FF : 0`, treating _signed_ integers as _unsigned_ integers
+pub unsafe fn a_lt_b(a: __m256i, b: __m256i) -> __m256i {
     let a_lt_0 = _mm256_cmpgt_epi64(_mm256_setzero_si256(), a);
     let b_lt_0 = _mm256_cmpgt_epi64(_mm256_setzero_si256(), b);
 
@@ -702,14 +701,115 @@ pub unsafe fn a_le_b(a: __m256i, b: __m256i) -> __m256i {
     )
 }
 
+/// Computes `a * b` using 32bit multiplication and the Karatsuba algorithm
+pub unsafe fn a_mul_b_karatsuba(a: __m256i, b: __m256i) -> (__m256i, __m256i) {
+    let a_low = _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), a);
+    let a_high = _mm256_srli_epi64::<32>(a);
+    let b_low = _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), b);
+    let b_high = _mm256_srli_epi64::<32>(b);
+
+    let mut high = _mm256_mul_epu32(a_high, b_high);
+    let low = _mm256_mul_epu32(a_low, b_low);
+    let low_low = _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), low);
+    let mut low_high = _mm256_srli_epi64::<32>(low);
+
+    let middle_0 = _mm256_mul_epu32(a_high, b_low);
+    let middle_1 = _mm256_mul_epu32(a_low, b_high);
+
+    let middle_0_low = _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), middle_0);
+    let middle_0_high = _mm256_srli_epi64::<32>(middle_0);
+
+    let middle_1_low = _mm256_and_si256(_mm256_set1_epi64x(0xffffffff), middle_1);
+    let middle_1_high = _mm256_srli_epi64::<32>(middle_1);
+
+    high = _mm256_add_epi64(high, middle_0_high);
+    high = _mm256_add_epi64(high, middle_1_high);
+
+    low_high = _mm256_add_epi64(low_high, middle_0_low);
+    low_high = _mm256_add_epi64(low_high, middle_1_low);
+
+    high = _mm256_add_epi64(high, _mm256_srli_epi64::<32>(low_high));
+
+    (
+        high,
+        _mm256_or_si256(low_low, _mm256_slli_epi64::<32>(low_high)),
+    )
+}
+
+/// Computes `a - b` for 128bit values
+pub unsafe fn a_sub_b(
+    a_high: __m256i,
+    a_low: __m256i,
+    b_high: __m256i,
+    b_low: __m256i,
+) -> (__m256i, __m256i) {
+    let low = _mm256_sub_epi64(a_low, b_low);
+
+    // b_low > a_low ? 0x01 : 0
+    let low_carry = _mm256_and_si256(_mm256_set1_epi64x(1), a_lt_b(a_low, b_low));
+
+    let high = _mm256_sub_epi64(_mm256_sub_epi64(a_high, low_carry), b_high);
+
+    (high, low)
+}
+
+/// Computes `a < b ? 0xFF..FF : 0` for 128bit values
+pub unsafe fn a_lt_b_wide(
+    a_high: __m256i,
+    a_low: __m256i,
+    b_high: __m256i,
+    b_low: __m256i,
+) -> __m256i {
+    let a_low_lt_b_low = a_lt_b(a_low, b_low);
+    let a_high_lt_b_high = a_lt_b(a_high, b_high);
+    let a_high_eq_b_high = _mm256_cmpeq_epi64(a_high, b_high);
+
+    _mm256_or_si256(
+        a_high_lt_b_high,
+        _mm256_and_si256(a_high_eq_b_high, a_low_lt_b_low),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{arch::x86_64::*, i64};
 
-    use crate::dft::ntt_avx2::a_le_b;
+    use crate::dft::ntt_avx2::a_lt_b;
 
-    use super::{extract_m256d_to_f64, extract_m256i_to_i64, TableAVX2, U32_PRIME};
+    use super::{
+        a_mul_b_karatsuba, a_sub_b, extract_m256d_to_f64, extract_m256i_to_i64, TableAVX2,
+    };
 
+    #[test]
+    fn a_sub_b_wide() {
+        let (high, low) = unsafe {
+            let a_high = _mm256_setr_epi64x(0, 0, 2, 2);
+            let a_low = _mm256_setr_epi64x(0, 1, 2, 1);
+            let b_high = _mm256_setr_epi64x(0, 0, 2, 0);
+            let b_low = _mm256_setr_epi64x(0, 2, 1, 2);
+
+            a_sub_b(a_high, a_low, b_high, b_low)
+        };
+
+        assert_eq!(extract_m256i_to_i64(&high), [0, -1, 0, 1]);
+        assert_eq!(extract_m256i_to_i64(&low), [0, -1, 1, -1]);
+    }
+
+    #[test]
+    fn karatsuba() {
+        let (high, low) = unsafe {
+            let a = _mm256_setr_epi64x(-4294967296, 4294967295, -1, -1);
+            let b = _mm256_setr_epi64x(-4294967296, 4294967295, 4294967295, -1);
+
+            a_mul_b_karatsuba(a, b)
+        };
+
+        assert_eq!(
+            extract_m256i_to_i64(&high),
+            [-8589934591, 0, 4294967294, -2]
+        );
+        assert_eq!(extract_m256i_to_i64(&low), [0, -8589934591, -4294967295, 1]);
+    }
     #[test]
     fn extract_u64() {
         let data = unsafe { _mm256_setr_epi64x(1, 2, 3, 4) };
@@ -733,11 +833,13 @@ mod tests {
     fn montgomery_transformation() {
         let table = TableAVX2::new();
 
-        let values: [i64; 2] = [1, U32_PRIME - 1048321];
+        let values: [i64; 2] = [1, 0x1fffffffffe00001 - 1048321];
 
         for val in values {
-            let res =
-                unsafe { table.montgomery_reduce_32(table.to_montgomery(_mm256_set1_epi64x(val))) };
+            let res = unsafe {
+                let low = table.to_montgomery(_mm256_set1_epi64x(val));
+                table.montgomery_reduce_64(_mm256_setzero_si256(), low)
+            };
 
             assert_eq!(extract_m256i_to_i64(&res), [val, val, val, val]);
         }
@@ -787,7 +889,7 @@ mod tests {
             let c = _mm256_setr_epi64x(2, -1, 1, -1);
             let d = _mm256_setr_epi64x(1, 1, -1, -2);
 
-            (a_le_b(a, b), a_le_b(c, d))
+            (a_lt_b(a, b), a_lt_b(c, d))
         };
 
         assert_eq!(extract_m256i_to_i64(&mask.0), [-1, -1, 0, -1]);
@@ -815,11 +917,16 @@ mod tests {
                 to_montgomery(2318024136),
             );
 
-            table.montgomery_reduce_32(table.montgomery_mul_vec(&a, &b))
+            table.montgomery_reduce_64(_mm256_setzero_si256(), table.montgomery_mul_vec(&a, &b))
         };
 
         assert_eq!(
-            [1197697452, 2614870421, 4042194929, 3810847490],
+            [
+                151105094258736720,
+                37308892573532894,
+                2161727821135872001,
+                1644454774947165347
+            ],
             extract_m256i_to_i64(&control)
         );
     }
@@ -852,20 +959,30 @@ mod tests {
                 to_montgomery(2318024136),
             );
 
-            table.ntt_kernel_4(&cap_s, &mut a_j, &mut a_j_t);
+            table.cs_butterfly_simd_4(&cap_s, &mut a_j, &mut a_j_t);
 
             (
-                table.montgomery_reduce_32(a_j),
-                table.montgomery_reduce_32(a_j_t),
+                table.montgomery_reduce_64(_mm256_setzero_si256(), a_j),
+                table.montgomery_reduce_64(_mm256_setzero_si256(), a_j_t),
             )
         };
 
         assert_eq!(
-            [4023029885, 1682970774, 2185318912, 1901790419],
+            [
+                1281256975236828982,
+                824160231704762218,
+                1601391116647552192,
+                1613286033865546758
+            ],
             extract_m256i_to_i64(&a_j)
         );
         assert_eq!(
-            [1627634981, 747148653, 2834419742, 1153309131],
+            [
+                979046786719355542,
+                749542446557696430,
+                2010948492306909607,
+                1756774469921775392
+            ],
             extract_m256i_to_i64(&a_j_t)
         );
     }

@@ -1,6 +1,7 @@
-use crate::dft::DFT;
+//! NTT implementation using specialized prime that allows quick reductions
+
 use crate::utils::bit_reverse;
-use rand::{self, Rng};
+use crate::{dft::DFT, utils::mod_exp_u64};
 
 pub struct TableGoldilock<O> {
     /// NTT friendly prime modulus
@@ -57,24 +58,6 @@ impl TableGoldilock<u64> {
         res.with_precomputes();
 
         res
-    }
-
-    fn mod_exp(&self, base: u64, mut exp: u64) -> u64 {
-        let mut out = 1;
-
-        let mut acc = base;
-
-        while exp > 0 {
-            if exp % 2 == 1 {
-                out = self.mul_reduce(out, acc);
-            }
-
-            acc = self.mul_reduce(acc, acc);
-
-            exp >>= 1;
-        }
-
-        out
     }
 
     /// Reduce a 159-bit number modulo 18446744069414584321
@@ -210,7 +193,7 @@ impl TableGoldilock<u64> {
     }
 
     fn with_precomputes(&mut self) {
-        let psi_inv = self.mod_exp(self.psi, self.q - 2);
+        let psi_inv = mod_exp_u64(self.psi, self.q - 2, self.q);
 
         let mut tmp_psi = 1u64;
         let mut tmp_psi_inv = 1u64;
@@ -229,25 +212,9 @@ impl TableGoldilock<u64> {
             tmp_psi_inv = self.mul_reduce(tmp_psi_inv, psi_inv);
         }
     }
-
-    /// Finds a nth root of unity. Can be computed once and then cached.
-    pub fn find_nth_unity_root(&self, n: u64, m: u64) -> u64 {
-        let mut rand = rand::rng();
-
-        let mut tmp;
-        loop {
-            tmp = rand.random_range(2..m);
-
-            let g = self.mod_exp(tmp, (m - 1) / n);
-
-            match self.mod_exp(g, n / 2) {
-                1 => continue,
-                _ => break g,
-            }
-        }
-    }
 }
 
+/// Converts a u128 bit values into two u64 values, given as `(low, high)`
 #[inline]
 pub fn u128_to_u64(a: u128) -> (u64, u64) {
     let raw = a.to_be_bytes();
@@ -260,6 +227,7 @@ pub fn u128_to_u64(a: u128) -> (u64, u64) {
     (u64::from_be_bytes(low), u64::from_be_bytes(high))
 }
 
+/// Converts two u64 values (low, high) into one u128 values
 #[inline]
 pub fn u64_to_u128(low: u64, high: u64) -> u128 {
     let mut raw = [0u8; 16];

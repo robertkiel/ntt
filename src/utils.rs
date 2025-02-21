@@ -1,3 +1,5 @@
+//! Utilities to compute values related to NTT.
+
 use num_primes::{BigUint, Verification};
 use rand::{self, Rng};
 
@@ -7,7 +9,7 @@ use rand::{self, Rng};
 /// ```rust
 /// use ntt::utils::bit_reverse;
 ///
-/// assert_eq!(bit_reverse(2, 2), 4);
+/// assert_eq!(bit_reverse(2, 2), 1);
 /// ```
 pub fn bit_reverse(n: u64, bits: u32) -> u64 {
     let shift = (64 - bits) / 2;
@@ -108,18 +110,3 @@ macro_rules! make_find_nth_root {
 
 make_find_nth_root!(u64, find_nth_unity_root_u64, mod_exp_u64);
 make_find_nth_root!(i64, find_nth_unity_root_i64, mod_exp_i64);
-
-#[test]
-// #[ignore = "no need to invert r twice"]
-fn test_egcd() {
-    // println!("{}", 4293918721 * 1048577 - 2i128.pow(32) * 1048321);
-    // println!("{:?}", egcd(4293918721, 2i128.pow(32)))
-    println!("{:?}", egcd(0xffffffff00000001, 2i128.pow(64)));
-    // println!("{:?}", 2i128.pow(64) - 5367591850636746239);
-}
-
-#[ignore = "no need to find the prime twice"]
-#[test]
-fn find_prime() {
-    find_prime_n_primitive_root(32);
-}

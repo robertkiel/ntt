@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn avx_correctness() {
         let mut rng = rand::rng();
-        let table = Table::<u64>::new_u32_compatible();
+        let table = Table::<u64>::new();
         let table_avx = TableAVX2::new();
 
         let mut a_avx2 = [0i64; 2u64.pow(16) as usize];
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn avx_against_base() {
         let mut rng = rand::rng();
-        let table = Table::<u64>::new_u32_compatible();
+        let table = Table::<u64>::new();
         let table_avx = TableAVX2::new();
 
         let mut a_avx2 = [0i64; 2u64.pow(16) as usize];
@@ -95,7 +95,7 @@ mod tests {
         let a_cloned = a.clone();
 
         let now = SystemTime::now();
-        for _ in 0..30 {
+        for _ in 0..10 {
             table.forward_inplace(&mut a);
 
             table.backward_inplace(&mut a);
@@ -109,7 +109,7 @@ mod tests {
 
         let now = SystemTime::now();
 
-        for _ in 0..30 {
+        for _ in 0..10 {
             table_avx.forward_inplace(&mut a_avx2);
 
             table_avx.backward_inplace(&mut a_avx2);
@@ -121,8 +121,6 @@ mod tests {
             .iter()
             .zip(a_avx2.iter())
             .all(|(a, a_avx2)| { *a == *a_avx2 as u64 }));
-
-        panic!("here to always see stdout output")
     }
 
     #[test]

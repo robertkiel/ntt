@@ -1,3 +1,5 @@
+//! NTT implementation
+
 use crate::utils::bit_reverse;
 use crate::{dft::DFT, utils::mod_exp_u64};
 
