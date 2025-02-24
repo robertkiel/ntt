@@ -1,6 +1,6 @@
 ## NTT in Rust
 
-Small Rust repo to showcase different ways of computing Rust, including
+Small repo to showcase different ways of computing the NTT in Rust, including
 
 - naive base implementation using Montgomery transformation, implemented for primes <= 61 bit
 - AVX2-enhanced implementation using Montgomery transformation, implemented for primes <= 61 bit using Karatsuba algorithm
