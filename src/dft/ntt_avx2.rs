@@ -1,7 +1,7 @@
 //! NTT implementation using AVX2 instruction for enhanced performance
 
 use crate::dft::DFT;
-use crate::utils::{bit_reverse, mod_exp_i64};
+use crate::utils::{bit_reverse, egcd_i128, MontgomeryTransformer};
 use std::arch::x86_64::*;
 
 pub struct TableAVX2 {
@@ -9,15 +9,14 @@ pub struct TableAVX2 {
     pub q: i64,
     /// N-th root of unity
     pub psi: i64,
+    /// Multiplicative inverse of psi in Montgomery form
+    psi_inv_montgomery: i64,
     /// Which root of unity psi is
     n: usize,
-    k_vec: __m256i,
-    r_square: __m256i,
     // ------ internals, mostly caching --------
-    /// inverse of n, in AVX2 struct
-    n_inv_montgomery: __m256i,
-    /// q as AVX2 integer vector
-    q_vec: __m256i,
+    /// multiplicative inverse of n in Montgomery form
+    n_inv_montgomery: i64,
+    montgomery: MontgomeryTransformer<i64>,
     /// powers of psi in byte order
     powers_psi_bo: Vec<i64>,
     /// powers of inv_psi in byte order
@@ -56,24 +55,53 @@ impl DFT<i64> for TableAVX2 {
 
 impl TableAVX2 {
     pub fn new() -> Self {
-        let n = 2usize.pow(16);
-        let mut res = Self {
-            q: 0x1fffffffffe00001,
-            q_vec: unsafe { _mm256_set1_epi64x(0x1fffffffffe00001) },
-            psi: 0x15eb043c7aa2b01f,
-            n,
-            r_square: unsafe { _mm256_set1_epi64x(0xfffff0000040) },
-            k_vec: unsafe { _mm256_set1_epi64x(6917533425689690113) },
-            n_inv_montgomery: unsafe { _mm256_set1_epi64x(281474976710656) },
-            // -- precomputed powers of psi
-            powers_psi_bo: Vec::with_capacity(n),
-            // -- precomputed powers of inv_psi
-            powers_psi_inv_bo: Vec::with_capacity(n),
+        Self::from_prime_and_root(0x1fffffffffe00001, 0x15eb043c7aa2b01f, 2i64.pow(16))
+    }
+
+    /// Takes a modulus and a n-th root of unity and instatiates a struct that allows fast NTT and INTT operations
+    ///
+    /// ```rust
+    /// use ntt::dft::{ntt_avx2::TableAVX2, DFT};
+    ///
+    /// const PRIME: i64 = 0x1fffffffffe00001;
+    /// /// 2^17th root of unity
+    /// const ROOT: i64 = 0x15eb043c7aa2b01f;
+    /// const N: i64 = 2i64.pow(16);
+    ///
+    /// TableAVX2::from_prime_and_root(PRIME, ROOT, N);
+    /// ```
+    ///
+    pub fn from_prime_and_root(modulus: i64, root: i64, n: i64) -> Self {
+        let montgomery = MontgomeryTransformer::<i64>::from_modulus(modulus);
+
+        let n_inv_raw = egcd_i128(n as i128, modulus as i128).1;
+
+        let n_inv = if n_inv_raw < 0 {
+            n_inv_raw as i64 + modulus
+        } else {
+            n_inv_raw as i64
         };
 
-        res.with_precomputes();
+        let psi_inv_raw = egcd_i128(root as i128, modulus as i128).1;
 
-        res
+        let psi_inv = if psi_inv_raw < 0 {
+            (psi_inv_raw + modulus as i128) as i64
+        } else {
+            psi_inv_raw as i64
+        };
+
+        Self {
+            q: modulus,
+            psi: root,
+            psi_inv_montgomery: montgomery.transform(psi_inv),
+            n_inv_montgomery: montgomery.transform(n_inv),
+            n: n as usize,
+            montgomery,
+            // montgomery,
+            powers_psi_bo: Vec::with_capacity(n as usize),
+            powers_psi_inv_bo: Vec::with_capacity(n as usize),
+        }
+        .with_precomputes()
     }
 
     /// Computes the forward NTT using AVX2
@@ -116,12 +144,12 @@ impl TableAVX2 {
                         );
 
                         self.cs_butterfly_simd_4(
-                            &self.to_montgomery(_mm256_setr_epi64x(
+                            &_mm256_setr_epi64x(
                                 self.powers_psi_bo[m + i],
                                 self.powers_psi_bo[m + i + 1],
                                 self.powers_psi_bo[m + i + 2],
                                 self.powers_psi_bo[m + i + 3],
-                            )),
+                            ),
                             &mut a_j,
                             &mut a_j_t,
                         );
@@ -161,12 +189,12 @@ impl TableAVX2 {
                             _mm256_setr_epi64x(a[j_i1_t], a[j_i1_t + 1], a[j_i2_t], a[j_i2_t + 1]);
 
                         self.cs_butterfly_simd_4(
-                            &self.to_montgomery(_mm256_setr_epi64x(
+                            &_mm256_setr_epi64x(
                                 self.powers_psi_bo[m + i],
                                 self.powers_psi_bo[m + i],
                                 self.powers_psi_bo[m + i + 1],
                                 self.powers_psi_bo[m + i + 1],
-                            )),
+                            ),
                             &mut a_j,
                             &mut a_j_t,
                         );
@@ -209,7 +237,7 @@ impl TableAVX2 {
                                 );
 
                                 self.cs_butterfly_simd_4(
-                                    &self.to_montgomery(_mm256_set1_epi64x(cap_s)),
+                                    &_mm256_set1_epi64x(cap_s),
                                     &mut a_j,
                                     &mut a_j_t,
                                 );
@@ -290,12 +318,12 @@ impl TableAVX2 {
                         );
 
                         self.gs_butterfly_simd_4(
-                            &self.to_montgomery(_mm256_setr_epi64x(
+                            &_mm256_setr_epi64x(
                                 self.powers_psi_inv_bo[h + i],
                                 self.powers_psi_inv_bo[h + i + 1],
                                 self.powers_psi_inv_bo[h + i + 2],
                                 self.powers_psi_inv_bo[h + i + 3],
-                            )),
+                            ),
                             &mut a_j,
                             &mut a_j_t,
                         );
@@ -335,12 +363,12 @@ impl TableAVX2 {
                             _mm256_setr_epi64x(a[j_i1_t], a[j_i1_t + 1], a[j_i2_t], a[j_i2_t + 1]);
 
                         self.gs_butterfly_simd_4(
-                            &self.to_montgomery(_mm256_setr_epi64x(
+                            &_mm256_setr_epi64x(
                                 self.powers_psi_inv_bo[h + i],
                                 self.powers_psi_inv_bo[h + i],
                                 self.powers_psi_inv_bo[h + i + 1],
                                 self.powers_psi_inv_bo[h + i + 1],
-                            )),
+                            ),
                             &mut a_j,
                             &mut a_j_t,
                         );
@@ -381,7 +409,7 @@ impl TableAVX2 {
                                 );
 
                                 self.gs_butterfly_simd_4(
-                                    &self.to_montgomery(_mm256_set1_epi64x(cap_s)),
+                                    &_mm256_set1_epi64x(cap_s),
                                     &mut a_j,
                                     &mut a_j_t,
                                 );
@@ -429,7 +457,7 @@ impl TableAVX2 {
                 let a_j = _mm256_setr_epi64x(a[j], a[j + 1], a[j + 2], a[j + 3]);
                 let res = self.montgomery_reduce_64(
                     _mm256_setzero_si256(),
-                    self.montgomery_mul_vec(&a_j, &self.n_inv_montgomery),
+                    self.montgomery_mul_vec(&a_j, &_mm256_set1_epi64x(self.n_inv_montgomery)),
                 );
                 a[j] = _mm256_extract_epi64::<0>(res);
                 a[j + 1] = _mm256_extract_epi64::<1>(res);
@@ -534,11 +562,17 @@ impl TableAVX2 {
     #[inline]
     unsafe fn reduce_if_greater_equal_q(&self, a: &mut __m256i) {
         // a > q ? a-q : a
-        let masked = _mm256_and_si256(_mm256_cmpgt_epi64(*a, self.q_vec), self.q_vec);
+        let masked = _mm256_and_si256(
+            _mm256_cmpgt_epi64(*a, _mm256_set1_epi64x(self.q)),
+            _mm256_set1_epi64x(self.q),
+        );
         *a = _mm256_sub_epi64(*a, masked);
 
         // a == q ? 0 : a
-        let masked = _mm256_and_si256(_mm256_cmpeq_epi64(*a, self.q_vec), self.q_vec);
+        let masked = _mm256_and_si256(
+            _mm256_cmpeq_epi64(*a, _mm256_set1_epi64x(self.q)),
+            _mm256_set1_epi64x(self.q),
+        );
         *a = _mm256_sub_epi64(*a, masked);
     }
 
@@ -546,17 +580,20 @@ impl TableAVX2 {
     #[inline]
     unsafe fn reduce_if_negative(&self, a: &mut __m256i) {
         // a < 0 ? q : 0
-        let masked = _mm256_and_si256(self.q_vec, _mm256_cmpgt_epi64(_mm256_setzero_si256(), *a));
+        let masked = _mm256_and_si256(
+            _mm256_set1_epi64x(self.q),
+            _mm256_cmpgt_epi64(_mm256_setzero_si256(), *a),
+        );
         // println!("reduce if negative {masked:?}");
         *a = _mm256_add_epi64(*a, masked);
     }
 
     /// Adds all kind of precomputes, mainly storing precomputed values batched in AVX2-compatible structs
-    fn with_precomputes(&mut self) {
-        let psi_inv = mod_exp_i64(self.psi, self.q - 2, self.q);
+    fn with_precomputes(mut self) -> Self {
+        let psi_montgomery = self.montgomery.transform(self.psi);
 
-        let mut tmp_psi = 1;
-        let mut tmp_psi_inv = 1;
+        let mut tmp_psi = self.montgomery.transform(1);
+        let mut tmp_psi_inv = self.montgomery.transform(1);
 
         self.powers_psi_bo.resize(self.n, 0);
         self.powers_psi_inv_bo.resize(self.n, 0);
@@ -568,9 +605,11 @@ impl TableAVX2 {
             self.powers_psi_bo[reversed_index] = tmp_psi;
             self.powers_psi_inv_bo[reversed_index] = tmp_psi_inv;
 
-            tmp_psi = self.mul_reduce(tmp_psi, self.psi);
-            tmp_psi_inv = self.mul_reduce(tmp_psi_inv, psi_inv);
+            tmp_psi = self.montgomery.mul(tmp_psi, psi_montgomery);
+            tmp_psi_inv = self.montgomery.mul(tmp_psi_inv, self.psi_inv_montgomery);
         }
+
+        self
     }
 
     /// Computes a * b mod self.q
@@ -583,16 +622,19 @@ impl TableAVX2 {
     #[inline]
     unsafe fn montgomery_reduce_64(&self, t_high: __m256i, mut t_low: __m256i) -> __m256i {
         // m = (t mod 2^32) * k mod 2^32
-        let (_, m_low) = a_mul_b_karatsuba(t_low, self.k_vec);
+        let (_, m_low) = a_mul_b_karatsuba(t_low, _mm256_set1_epi64x(self.montgomery.k));
 
         // m_n = (u64) m * self.q
-        let (m_n_high, m_n_low) = a_mul_b_karatsuba(m_low, self.q_vec);
+        let (m_n_high, m_n_low) = a_mul_b_karatsuba(m_low, _mm256_set1_epi64x(self.q));
 
         // y = (t - m_n) / 2^32
         let y = a_sub_b(t_high, t_low, m_n_high, m_n_low).0;
 
         // mask = (u64) x < (u64) m
-        let mask = _mm256_and_si256(a_lt_b_wide(t_high, t_low, m_n_high, m_n_low), self.q_vec);
+        let mask = _mm256_and_si256(
+            a_lt_b_wide(t_high, t_low, m_n_high, m_n_low),
+            _mm256_set1_epi64x(self.q),
+        );
 
         // t = t < m_n ? t + self.q : t
         t_low = _mm256_add_epi64(mask, y);
@@ -630,7 +672,7 @@ impl TableAVX2 {
     /// Transforms the given value to Montgomery form
     #[inline]
     unsafe fn to_montgomery(&self, a: __m256i) -> __m256i {
-        let (high, low) = a_mul_b_karatsuba(a, self.r_square);
+        let (high, low) = a_mul_b_karatsuba(a, _mm256_set1_epi64x(self.montgomery.r_square));
 
         self.montgomery_reduce_64(high, low)
     }

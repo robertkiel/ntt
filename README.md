@@ -22,8 +22,37 @@ Goldilock 286ms
 ```
 
 
-## Test suite
+## Unit test suite
 
 ```sh
 RUSTFLAGS='-C target-cpu=native' cargo test -r
+```
+
+## Testing with other primes (and roots)
+
+Note that the AVX2 implementation is heavily optimized for primes close to 2^64
+
+### Base
+```rust
+use ntt::dft::{ntt::Table, DFT};
+
+const PRIME: u64 = 0x1fffffffffe00001u64;
+/// 2^17th root of unity
+const ROOT: u64 = 0x15eb043c7aa2b01fu64;
+const N: u64 = 2u64.pow(16);
+
+Table::from_prime_and_root(PRIME, ROOT, N);
+```
+
+### AVX2
+
+```rust
+use ntt::dft::{ntt_avx2::TableAVX2, DFT};
+
+const PRIME: i64 = 0x1fffffffffe00001;
+/// 2^17th root of unity
+const ROOT: i64 = 0x15eb043c7aa2b01f;
+const N: i64 = 2i64.pow(16);
+
+TableAVX2::from_prime_and_root(PRIME, ROOT, N);
 ```

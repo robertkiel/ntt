@@ -46,18 +46,15 @@ impl DFT<u64> for TableGoldilock<u64> {
 
 impl TableGoldilock<u64> {
     pub fn new() -> Self {
-        let mut res = Self {
+        Self {
             q: 0xffffffff00000001,
             psi: 0xabd0a6e8aa3d8a0e, //2^17th root of unity
             n: 2u64.pow(16),
             n_inv: 0xfffeffff00010001,
             powers_psi_bo: Vec::with_capacity(2usize.pow(16)),
             powers_psi_inv_bo: Vec::with_capacity(2usize.pow(16)),
-        };
-
-        res.with_precomputes();
-
-        res
+        }
+        .with_precomputes()
     }
 
     /// Reduce a 159-bit number modulo 18446744069414584321
@@ -192,7 +189,7 @@ impl TableGoldilock<u64> {
         self.reduce_159(tmp.1, middle, high)
     }
 
-    fn with_precomputes(&mut self) {
+    fn with_precomputes(mut self) -> Self {
         let psi_inv = mod_exp_u64(self.psi, self.q - 2, self.q);
 
         let mut tmp_psi = 1u64;
@@ -211,6 +208,8 @@ impl TableGoldilock<u64> {
             tmp_psi = self.mul_reduce(tmp_psi, self.psi);
             tmp_psi_inv = self.mul_reduce(tmp_psi_inv, psi_inv);
         }
+
+        self
     }
 }
 
